@@ -24,4 +24,9 @@ module.exports = {
   FIREWALL_GROUP: 'Minecraft Server Farm',
   TRASH_DIR: path.join(DATA, 'trash'),
   BDS_EXE: IS_WIN ? 'bedrock_server.exe' : 'bedrock_server',
+  // Java Edition: server jars per game version, and the Java runtimes (from Mojang) they run on.
+  JAVA_DIR: path.join(DATA, 'java'),
+  JAVA_VERSIONS_DIR: path.join(DATA, 'java', 'versions'),
+  JAVA_RUNTIME_DIR: path.join(DATA, 'java', 'runtime'),
+  JAVA_DOWNLOADS_DIR: path.join(DATA, 'java', 'downloads'),
 };

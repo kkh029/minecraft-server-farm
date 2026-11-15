@@ -66,11 +66,42 @@
         <button type="button" class="icon-btn" data-close aria-label="닫기"></button>
       </header>
       <div class="dialog-scroll">
+        <fieldset class="edition-pick">
+          <legend>에디션</legend>
+          <label class="edition-opt">
+            <input type="radio" name="edition" value="bedrock">
+            <span class="edition-card"><b>Bedrock</b><small>휴대폰·태블릿·Windows 앱·콘솔(Xbox, 스위치, PS)의 마인크래프트</small></span>
+          </label>
+          <label class="edition-opt">
+            <input type="radio" name="edition" value="java">
+            <span class="edition-card"><b>Java</b><small>PC(Windows·Mac·Linux) 런처로 하는 Java Edition</small></span>
+          </label>
+        </fieldset>
+        <p class="hint" id="edition-note"></p>
         <label class="field">
           <span>서버 이름</span>
           <input name="name" maxlength="40" required placeholder="예: 우리반 야생">
           <small>마인크래프트 서버 목록에 보이는 이름입니다.</small>
         </label>
+        <div class="row2" data-edition="java">
+          <label class="field">
+            <span>게임 버전</span>
+            <select name="javaVersion"></select>
+            <small id="java-version-note"></small>
+          </label>
+          <label class="field">
+            <span>메모리 (최대)</span>
+            <select name="memoryMB">
+              <option value="1024">1 GB</option>
+              <option value="2048">2 GB (권장)</option>
+              <option value="3072">3 GB</option>
+              <option value="4096">4 GB</option>
+              <option value="6144">6 GB</option>
+              <option value="8192">8 GB</option>
+            </select>
+            <small>Java 서버가 쓸 수 있는 최대 메모리입니다. 접속자가 많으면 늘리세요.</small>
+          </label>
+        </div>
         <div class="row2">
           <label class="field">
             <span>게임 모드</span>
@@ -106,21 +137,26 @@
           <input name="levelSeed" maxlength="32" placeholder="비우면 무작위">
           <small id="seed-note">월드를 처음 만들 때만 쓰입니다.</small>
         </label>
-        <label class="check">
+        <label class="check" id="protect-row">
           <input type="checkbox" name="protect">
-          <span><b>비밀번호 보호</b> <span class="muted">— 실행할 때마다 새 비밀번호를 만들고, 접속한 사람은 비밀번호를 입력해야 플레이할 수 있습니다.</span></span>
+          <span><b>비밀번호 보호</b> <span class="muted" id="protect-desc"></span></span>
+        </label>
+        <label class="check" id="eula-row" data-edition="java">
+          <input type="checkbox" name="agreeEula">
+          <span><a href="https://www.minecraft.net/eula" target="_blank" rel="noopener noreferrer">Minecraft 최종 사용자 사용권 계약(EULA)</a>에 동의합니다. <span class="muted">— Java 서버 프로그램은 Mojang 공식 서버에서 내려받으며, EULA에 동의해야 실행됩니다.</span></span>
         </label>
         <details class="advanced">
           <summary>고급 설정</summary>
           <label class="check">
             <input type="checkbox" name="onlineMode">
-            <span>Xbox 계정 인증 <span class="muted">— 끄면 계정 확인 없이 접속됩니다. 켜 두는 것을 권장합니다.</span></span>
+            <span data-edition="bedrock">Xbox 계정 인증 <span class="muted">— 끄면 계정 확인 없이 접속됩니다. 켜 두는 것을 권장합니다.</span></span>
+            <span data-edition="java">정품 계정 인증 <span class="muted">— Microsoft 계정으로 산 Java Edition만 접속됩니다. 끄면 아무 이름으로나 접속할 수 있으니 켜 두는 것을 권장합니다.</span></span>
           </label>
-          <label class="check">
+          <label class="check" data-edition="bedrock">
             <input type="checkbox" name="allowCheats">
             <span>치트(명령어) 허용</span>
           </label>
-          <label class="check">
+          <label class="check" data-edition="bedrock">
             <input type="checkbox" name="lanVisibility">
             <span>같은 네트워크(LAN)에 서버 표시 <span class="muted">— 한 PC에서는 먼저 켠 서버 하나만 표시됩니다.</span></span>
           </label>
@@ -128,9 +164,9 @@
             <label class="field">
               <span>최대 시야 거리 (청크)</span>
               <input name="viewDistance" type="number" min="6" max="96">
-              <small>낮을수록 메모리와 CPU를 덜 씁니다. 기본 32.</small>
+              <small id="view-note">낮을수록 메모리와 CPU를 덜 씁니다. 기본 32.</small>
             </label>
-            <label class="field">
+            <label class="field" data-edition="bedrock">
               <span>게임용 UDP 시작 포트</span>
               <input name="udpPortStart" type="number" min="1024" max="65519" placeholder="자동">
               <small>여기서부터 16개를 씁니다. 비우면 자동.</small>
@@ -210,6 +246,11 @@
                 <small>새 서버마다 여기서부터 16개씩 범위를 받습니다.</small>
               </label>
             </div>
+            <label class="field narrow">
+              <span>Java 서버 접속 포트 시작 번호 (TCP)</span>
+              <input type="number" id="java-port-base" min="1024" max="65000">
+              <small>새 Java 서버는 이 번호부터 1씩 늘려가며 받습니다. Java 서버는 이 TCP 포트 하나만 씁니다.</small>
+            </label>
           </section>
 
           <section class="set-section">
@@ -249,6 +290,24 @@
           </label>
           <button type="button" class="btn primary" id="bds-install">최신 버전 내려받기</button>
           <p class="hint">플레이어의 마인크래프트가 업데이트되면 서버도 같은 버전이어야 접속할 수 있습니다. 새 버전은 서버를 다음에 실행할 때 적용되고, 월드는 그대로 유지됩니다.</p>
+        </section>
+
+        <section class="set-section" id="java-section">
+          <h4>Java 서버 프로그램 (Java Edition)</h4>
+          <div id="java-status"></div>
+          <div class="bds-actions">
+            <label class="field narrow">
+              <span>미리 내려받을 버전</span>
+              <select id="java-pick"></select>
+            </label>
+            <button type="button" class="btn" id="java-install">내려받기</button>
+            <button type="button" class="btn" id="java-check">버전 목록 새로고침</button>
+          </div>
+          <label class="check" id="java-eula-row">
+            <input type="checkbox" id="java-eula">
+            <span><a href="https://www.minecraft.net/eula" target="_blank" rel="noopener noreferrer">Minecraft 최종 사용자 사용권 계약(EULA)</a>에 동의합니다.</span>
+          </label>
+          <p class="hint">Java 서버는 서버마다 게임 버전을 고릅니다. 고른 버전의 서버 프로그램과, 그 버전에 맞는 Java 실행 환경을 Mojang 공식 서버에서 받아 <code>data/java</code>에 둡니다 (처음 실행할 때 자동으로 받으므로 미리 받지 않아도 됩니다). 플레이어는 런처에서 서버와 같은 버전을 골라 접속합니다.</p>
         </section>
 
         <section class="set-section">

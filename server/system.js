@@ -103,7 +103,8 @@ function processMemory(pids) {
       }
       return resolve(result);
     }
-    execFile('tasklist', ['/FI', 'IMAGENAME eq bedrock_server.exe', '/FO', 'CSV', '/NH'], { windowsHide: true }, (err, stdout) => {
+    // Bedrock servers are bedrock_server.exe, Java servers java.exe; the PID list picks ours out.
+    execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
       if (err) return resolve(result);
       for (const line of stdout.split(/\r?\n/)) {
         const cols = line.match(/"([^"]*)"/g)?.map((c) => c.slice(1, -1));
@@ -117,17 +118,19 @@ function processMemory(pids) {
   });
 }
 
-// Confirms a PID still belongs to a Bedrock server (guards against PID reuse after a reboot).
-function isBedrockProcess(pid) {
+// Confirms a PID still belongs to a Minecraft server of that edition (guards against PID reuse after a reboot).
+function isServerProcess(pid, edition = 'bedrock') {
+  const linuxExe = edition === 'java' ? /\/bin\/java$/ : /bedrock_server/;
+  const winImage = edition === 'java' ? /"java\.exe"/i : /bedrock_server/i;
   return new Promise((resolve) => {
     if (!IS_WIN) {
-      fs.readlink(`/proc/${pid}/exe`, (err, target) => resolve(!err && /bedrock_server/.test(target)));
+      fs.readlink(`/proc/${pid}/exe`, (err, target) => resolve(!err && linuxExe.test(target)));
       return;
     }
     execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true }, (err, stdout) => {
-      resolve(!err && /bedrock_server/i.test(stdout));
+      resolve(!err && winImage.test(stdout));
     });
   });
 }
 
-module.exports = { specs, recommend, lanAddresses, diskInfo, processMemory, isBedrockProcess };
+module.exports = { specs, recommend, lanAddresses, diskInfo, processMemory, isServerProcess };

@@ -5,11 +5,13 @@ const { HttpError } = require('./util');
 const { Store } = require('./store');
 const { Auth } = require('./auth');
 const { BdsManager } = require('./bds');
+const { JavaManager, supportsProtect, PROTECT_MIN_VERSION } = require('./java');
 const { Manager } = require('./manager');
 const { FirewallCheck } = require('./firewall');
 const properties = require('./properties');
 const instance = require('./instance');
 const system = require('./system');
+const { compareVersions } = require('./util');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -17,8 +19,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 const store = new Store();
 const auth = new Auth(store);
 const bds = new BdsManager(store);
-const manager = new Manager(store, bds);
-const firewall = new FirewallCheck();
+const java = new JavaManager(store);
+const manager = new Manager(store, bds, java);
+const firewall = new FirewallCheck(() => java.runtimes().map((r) => r.java));
 
 const app = express();
 app.disable('x-powered-by');
@@ -87,6 +90,7 @@ function publicSettings() {
     lanHost: c.lanHost,
     portBase: c.portBase,
     udpPortBase: c.udpPortBase,
+    javaPortBase: c.javaPortBase,
     authTimeoutSec: c.authTimeoutSec,
     authMaxFails: c.authMaxFails,
   };
@@ -98,6 +102,8 @@ async function snapshot() {
     settings: publicSettings(),
     slots: manager.slots(),
     bds: bds.view(),
+    java: java.view(),
+    eulaAcceptedAt: store.config.eulaAcceptedAt,
     firewall: firewall.state,
     hosts: hosts(),
     servers: store.servers.map((s) => manager.serverView(s)),
@@ -127,7 +133,17 @@ function scheduleState() {
 
 manager.on('change', scheduleState);
 bds.on('change', scheduleState);
+java.on('change', scheduleState);
 firewall.on('change', scheduleState);
+// A newly installed Java runtime is a new java.exe for Windows Firewall.
+let knownRuntimes = java.runtimes().length;
+java.on('change', () => {
+  const n = java.runtimes().length;
+  if (n !== knownRuntimes) {
+    knownRuntimes = n;
+    firewall.check().catch(() => {});
+  }
+});
 manager.on('log', (id, entry) => {
   if (!clients.size) return;
   if (!pendingLogs.has(id)) pendingLogs.set(id, []);
@@ -193,6 +209,7 @@ app.put('/api/settings', (req, res) => {
   }
   if (b.portBase !== undefined) next.portBase = numberIn(b.portBase, 1024, 65000, '시작 포트');
   if (b.udpPortBase !== undefined) next.udpPortBase = numberIn(b.udpPortBase, 1024, 65000, 'UDP 시작 포트');
+  if (b.javaPortBase !== undefined) next.javaPortBase = numberIn(b.javaPortBase, 1024, 65000, 'Java 시작 포트');
   if (b.authTimeoutSec !== undefined) next.authTimeoutSec = numberIn(b.authTimeoutSec, 30, 600, '인증 제한 시간');
   if (b.authMaxFails !== undefined) next.authMaxFails = numberIn(b.authMaxFails, 1, 20, '비밀번호 오류 허용 횟수');
   Object.assign(c, next);
@@ -221,32 +238,89 @@ app.put('/api/bds/current', (req, res) => {
   res.json(bds.view());
 });
 
+// ---------- Java Edition versions ----------
+app.get('/api/java/versions', wrap(async (req, res) => {
+  await java.checkVersions(true);
+  scheduleState();
+  res.json(java.view());
+}));
+
+// Downloads a version ahead of its first start (it is also downloaded automatically when a server needs it).
+app.post('/api/java/install', (req, res) => {
+  const version = String(req.body?.version || '');
+  if (!java.isValidVersion(version)) throw new HttpError(400, '내려받을 수 없는 버전입니다.');
+  acceptEula(req.body);
+  if (!store.config.eulaAcceptedAt) throw new HttpError(400, 'Minecraft EULA에 동의해야 내려받을 수 있습니다.');
+  java.ensure(version).catch(() => { /* shown through the task's error */ });
+  res.status(202).json({ ok: true });
+});
+
+// The Minecraft EULA covers both editions; agreeing once (here or when installing BDS) is enough.
+function acceptEula(body) {
+  if (body?.agreeEula === true && !store.config.eulaAcceptedAt) {
+    store.config.eulaAcceptedAt = new Date().toISOString();
+    store.saveConfig();
+  }
+}
+
 // ---------- servers ----------
 function requireStopped(id) {
   if (manager.isActive(id)) throw new HttpError(409, '서버를 정지한 뒤에 바꿀 수 있습니다.');
 }
 
-// Every server.properties option of the installed BDS version, for the "전체 서버 설정" form.
+// The game version a server's settings are checked against.
+const versionFor = (edition, javaVersion) => (edition === 'java' ? javaVersion : bds.currentVersion());
+
+// Every server.properties option of a server version, for the "전체 서버 설정" form.
 app.get('/api/server-properties', (req, res) => {
-  const s = properties.schema(bds.currentVersion());
-  if (!s) throw new HttpError(409, '서버 프로그램(BDS)이 설치되어 있어야 상세 설정을 볼 수 있습니다.');
+  const edition = req.query.edition === 'java' ? 'java' : 'bedrock';
+  const version = versionFor(edition, String(req.query.version || ''));
+  const s = properties.schema(edition, version);
+  if (!s) {
+    throw new HttpError(409, edition === 'java'
+      ? `Java ${version} 서버 프로그램을 내려받은 뒤에 전체 설정을 볼 수 있습니다. 서버를 처음 실행할 때 자동으로 받고, 설정 → Java 서버에서 미리 받을 수도 있습니다.`
+      : '서버 프로그램(BDS)이 설치되어 있어야 상세 설정을 볼 수 있습니다.');
+  }
   res.json(s);
 });
 
-function withCheckedProperties(body) {
-  if (!body || body.extraProperties === undefined) return body;
-  return { ...body, extraProperties: properties.validate(bds.currentVersion(), body.extraProperties) };
+// Checks what only the API layer knows about: the Java version list, the password check's minimum version,
+// and the server.properties options of the version the server will run.
+function checkServerBody(body, existing) {
+  if (!body || typeof body !== 'object') throw new HttpError(400, '잘못된 요청입니다.');
+  const edition = existing?.edition ?? (body.edition === 'java' ? 'java' : 'bedrock');
+  const out = { ...body };
+  if (edition === 'java') {
+    const version = String(body.javaVersion ?? existing?.javaVersion ?? '');
+    if (body.javaVersion !== undefined && !java.isValidVersion(version)) throw new HttpError(400, `Java Edition ${version || '(없음)'} 버전은 쓸 수 없습니다.`);
+    const protect = body.protect ?? existing?.protect ?? true;
+    if (protect && version && !supportsProtect(version)) {
+      throw new HttpError(400, `Java 서버의 비밀번호 보호는 ${PROTECT_MIN_VERSION} 이상에서만 쓸 수 있습니다. 버전을 올리거나 비밀번호 보호를 끄세요.`);
+    }
+    if (existing && body.javaVersion !== undefined) {
+      const last = instance.lastVersion(existing.id);
+      if (last && compareVersions(version, last) < 0 && instance.worldExists(existing.id, 'java')) {
+        throw new HttpError(400, `이 월드는 ${last}에서 실행된 적이 있어 더 낮은 버전으로 바꿀 수 없습니다.`);
+      }
+    }
+    acceptEula(body);
+  }
+  delete out.agreeEula;
+  if (body.extraProperties !== undefined) {
+    out.extraProperties = properties.validate(edition, versionFor(edition, body.javaVersion ?? existing?.javaVersion), body.extraProperties);
+  }
+  return out;
 }
 
 app.post('/api/servers', (req, res) => {
-  const server = store.createServer(withCheckedProperties(req.body));
+  const server = store.createServer(checkServerBody(req.body, null));
   scheduleState();
   res.status(201).json(manager.serverView(server));
 });
 
 app.patch('/api/servers/:id', (req, res) => {
   requireStopped(req.params.id);
-  const server = store.updateServer(req.params.id, withCheckedProperties(req.body));
+  const server = store.updateServer(req.params.id, checkServerBody(req.body, store.requireServer(req.params.id)));
   scheduleState();
   res.json(manager.serverView(server));
 });
@@ -324,6 +398,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) process.on(sig, (
 
 manager.recoverOrphans().catch((err) => console.error('이전 실행 정보 복구 실패:', err.message));
 bds.checkLatest().catch(() => {});
+java.checkVersions().then(scheduleState, () => {});
 firewall.check().catch(() => {});
 
 app.listen(PORT, HOST, () => {

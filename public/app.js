@@ -38,6 +38,20 @@
   };
 
   const GAMEMODE = { survival: '서바이벌', creative: '크리에이티브', adventure: '어드벤처' };
+  const isJava = (s) => s?.edition === 'java';
+  const editionLabel = (s) => (isJava(s) ? `Java ${s.javaVersion}` : 'Bedrock');
+  // Same rule as the server: compare dotted release numbers (26.1 > 1.21.11).
+  function cmpVersion(a, b) {
+    const pa = String(a).split('.').map(Number);
+    const pb = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return d;
+    }
+    return 0;
+  }
+  const javaProtectOk = (v) => Boolean(v) && cmpVersion(v, S?.java?.protectMinVersion || '1.21') >= 0;
+  const JAVA_TRIGGER = '/trigger pin set';
   const DIFFICULTY = { peaceful: '평화로움', easy: '쉬움', normal: '보통', hard: '어려움' };
   const STATUS = {
     stopped: { label: '정지됨', cls: 'stopped' },
@@ -214,10 +228,14 @@
     if ($('#dlg-console').open) renderConsoleMeta();
   }
 
+  const hasBedrock = () => S.servers.some((s) => !isJava(s));
+
   function renderTop() {
     const chip = $('#bds-chip');
     chip.textContent = S.bds.current ? `BDS ${S.bds.current}` : '서버 프로그램 없음';
     chip.className = `chip${S.bds.current ? '' : ' warn'}`;
+    // Without Bedrock servers a missing BDS isn't a problem worth a warning.
+    chip.hidden = !S.bds.current && !hasBedrock();
   }
 
   function sizing(estGB) {
@@ -294,6 +312,9 @@
     if (fw.blocked > 0) {
       return ['warn', `서버 슬롯을 <b>차단</b>하는 방화벽 규칙이 ${fw.blocked}개 있습니다 (확인 창에서 「취소」를 누르면 생깁니다). 프로젝트 폴더의 <code>firewall-setup.bat</code>을 실행하면 정리됩니다.`];
     }
+    if (fw.ok === false && fw.missingJava && fw.missingJava === fw.missing) {
+      return ['warn', `새로 받은 Java 실행 환경에 대한 Windows 방화벽 규칙이 없어, Java 서버를 켤 때 「액세스 허용」 확인 창이 뜹니다. 프로젝트 폴더의 <code>firewall-setup.bat</code>을 다시 실행하세요 (관리자 권한 필요).`];
+    }
     if (fw.ok === false) {
       return ['warn', `Windows 방화벽 규칙이 없어 서버를 처음 켤 때마다 「액세스 허용」 확인 창이 뜹니다. 프로젝트 폴더의 <code>firewall-setup.bat</code>을 한 번 실행하세요 (관리자 권한 필요).`];
     }
@@ -317,28 +338,56 @@
     } else if (t && t.phase === 'error') {
       out.push(banner('danger', '서버 프로그램 설치에 실패했습니다', esc(t.error), '<button class="btn" type="button" data-action="open-bds">다시 시도</button>'));
     }
-    if (!b.current && !bdsBusy()) {
+    // BDS only matters once there is a Bedrock server (Java servers bring their own program).
+    if (!b.current && !bdsBusy() && hasBedrock()) {
       out.push(banner('warn', '서버 프로그램(BDS)이 설치되어 있지 않습니다',
-        'Mojang 공식 Bedrock Dedicated Server를 내려받아야 서버를 실행할 수 있습니다.',
+        'Mojang 공식 Bedrock Dedicated Server를 내려받아야 Bedrock 서버를 실행할 수 있습니다.',
         '<button class="btn primary" type="button" data-action="open-bds">설치하기</button>'));
-    } else if (b.updateAvailable && !bdsBusy()) {
-      out.push(banner('info', `새 서버 버전이 나왔습니다 (${esc(b.latest)})`,
+    } else if (b.updateAvailable && !bdsBusy() && hasBedrock()) {
+      out.push(banner('info', `새 Bedrock 서버 버전이 나왔습니다 (${esc(b.latest)})`,
         `지금은 ${esc(b.current)}입니다. 플레이어의 마인크래프트가 업데이트되면 서버도 같은 버전이어야 접속할 수 있어요.`,
         '<button class="btn primary" type="button" data-action="open-bds">업데이트</button>'));
+    }
+    for (const jt of Object.values(S.java.tasks)) {
+      if (jt.phase === 'download' || jt.phase === 'extract') {
+        out.push(banner('info', `Java ${esc(jt.version)} 서버 프로그램 준비 중`, esc(javaTaskText(jt)), '', jt.phase === 'download' ? jt.percent : 100));
+      }
     }
     patch($('#banners'), out.join(''));
   }
 
-  function startBlockReason() {
-    if (!S.bds.current) return '서버 프로그램을 먼저 설치하세요.';
-    if (bdsBusy() && S.bds.task.version === S.bds.current) return '서버 프로그램 설치가 끝나면 실행할 수 있어요.';
+  function javaTaskText(t) {
+    if (t.phase === 'extract') return `${t.step}…`;
+    return `${t.step} 내려받는 중 ${t.percent}%${t.totalMB ? ` (${t.receivedMB} / ${t.totalMB} MB)` : ''}`;
+  }
+
+  function startBlockReason(s) {
+    if (isJava(s)) {
+      if (!S.java.platformSupported) return '이 운영체제에서는 Java 서버를 실행할 수 없습니다.';
+      if (!S.eulaAcceptedAt) return '편집에서 Minecraft EULA에 동의하면 실행할 수 있어요.';
+    } else {
+      if (!S.bds.current) return '서버 프로그램을 먼저 설치하세요.';
+      if (bdsBusy() && S.bds.task.version === S.bds.current) return '서버 프로그램 설치가 끝나면 실행할 수 있어요.';
+    }
     if (S.slots.used >= S.slots.max) return `빈 슬롯이 없습니다 (${S.slots.used}/${S.slots.max} 실행 중). 다른 서버를 정지하거나 설정에서 동시 실행 수를 늘리세요.`;
     return null;
   }
 
+  // Java's "서버 주소" field takes host:port in one go.
+  const javaAddress = (host, port) => `${host}:${port}`;
+
   function shareText(s) {
     const r = s.runtime;
     const h = S.hosts;
+    if (isJava(s)) {
+      const lines = [`[마인크래프트 Java 서버] ${s.name}`, `버전: Java Edition ${s.javaVersion}`];
+      if (h.public) lines.push(`서버 주소: ${javaAddress(h.public, s.port)}`, `(같은 와이파이라면 ${javaAddress(h.lan, s.port)})`);
+      else lines.push(`서버 주소: ${javaAddress(h.lan, s.port)}`);
+      if (r.pin) lines.push(`비밀번호: ${r.pin}`);
+      lines.push('', `마인크래프트 런처에서 ${s.javaVersion} 버전으로 실행 → 멀티플레이 → 「서버 추가」에서 서버 주소를 입력하세요.`);
+      if (r.pin) lines.push(`접속하면 채팅창(T)을 열고 ${JAVA_TRIGGER} ${r.pin} 을 입력하면 됩니다. (채팅에 뜨는 「여기를 눌러」를 누르면 명령어가 채워져요.)`);
+      return lines.join('\n');
+    }
     const lines = [`[마인크래프트 서버] ${s.name}`];
     if (h.public) lines.push(`주소: ${h.public}`, `포트: ${s.port}`, `(같은 와이파이라면 주소 ${h.lan})`);
     else lines.push(`주소: ${h.lan}`, `포트: ${s.port}`);
@@ -357,17 +406,28 @@
   function connectBlock(s) {
     const r = s.runtime;
     const h = S.hosts;
-    const rows = [copyRow(h.public ? 'LAN 주소' : '주소', h.lan)];
-    if (h.public) rows.push(copyRow('외부 주소', h.public));
-    rows.push(copyRow('포트', String(s.port)));
-    if (r.pin) rows.push(copyRow('비밀번호', r.pin, 'pin'));
+    let rows;
+    let help;
+    if (isJava(s)) {
+      rows = [copyRow(h.public ? 'LAN 주소' : '서버 주소', javaAddress(h.lan, s.port))];
+      if (h.public) rows.push(copyRow('외부 주소', javaAddress(h.public, s.port)));
+      if (r.pin) rows.push(copyRow('비밀번호', r.pin, 'pin'));
+      help = `런처에서 <b>${esc(s.javaVersion)}</b> 버전으로 실행 → 멀티플레이 → 「서버 추가」에 서버 주소를 넣고 접속하면${r.pin
+        ? `, 채팅창(T)에 <code>${JAVA_TRIGGER} ${esc(r.pin)}</code>을 입력하면 됩니다.` : ' 바로 플레이할 수 있어요.'}`;
+    } else {
+      rows = [copyRow(h.public ? 'LAN 주소' : '주소', h.lan)];
+      if (h.public) rows.push(copyRow('외부 주소', h.public));
+      rows.push(copyRow('포트', String(s.port)));
+      if (r.pin) rows.push(copyRow('비밀번호', r.pin, 'pin'));
+      help = `마인크래프트 → 플레이 → 서버 → 「서버 추가」에서 주소와 포트를 넣고 접속하면${r.pin ? ', 뜨는 창에 비밀번호를 입력하면 됩니다.' : ' 바로 플레이할 수 있어요.'}`;
+    }
     return `<div class="connect">
       <div class="connect-title"><span>접속 정보</span></div>
       <dl class="kv">${rows.join('')}</dl>
       <div class="connect-actions">
         <button class="btn sm" type="button" data-action="share" data-id="${s.id}">${ICON.share}공유 문구 복사</button>
       </div>
-      <p class="connect-help">마인크래프트 → 플레이 → 서버 → 「서버 추가」에서 주소와 포트를 넣고 접속하면${r.pin ? ', 뜨는 창에 비밀번호를 입력하면 됩니다.' : ' 바로 플레이할 수 있어요.'}</p>
+      <p class="connect-help">${help}</p>
     </div>`;
   }
 
@@ -382,9 +442,22 @@
 
   // Players only type the TCP port; the UDP range matters for port forwarding.
   function portsText(s) {
+    if (isJava(s)) return `TCP ${s.port}`;
     if (s.transport === 'raknet') return `UDP ${s.port}, ${s.port + 1}`;
     if (!Number.isInteger(s.udpPortStart)) return `TCP·UDP ${s.port}`;
     return `접속 TCP ${s.port} · 게임 UDP ${s.udpPortStart}-${s.udpPortStart + 15}`;
+  }
+
+  // The version a stopped server will run next, and the one it last ran.
+  function versionText(s) {
+    const r = s.runtime;
+    if (isJava(s)) {
+      const javaInstalled = S.java.installed.includes(s.javaVersion);
+      const next = `Java ${esc(s.javaVersion)}${javaInstalled ? '' : ' (처음 실행할 때 내려받음)'}`;
+      return r.installedVersion && r.installedVersion !== s.javaVersion ? `${esc(r.installedVersion)} → 다음 실행 때 ${next}` : next;
+    }
+    return r.installedVersion && S.bds.current && r.installedVersion !== S.bds.current
+      ? `${esc(r.installedVersion)} → 다음 실행 때 ${esc(S.bds.current)}` : esc(r.installedVersion || S.bds.current || '—');
   }
 
   function cardParts(s) {
@@ -393,27 +466,39 @@
     const now = Date.now();
     const uptime = r.status === 'running' && r.runningAt ? `<span class="uptime">${fmtDuration(now - r.runningAt)}</span>` : '';
     const head = `
-      <div class="card-top"><span class="pill ${st.cls}">${st.label}</span>${uptime}</div>
+      <div class="card-top"><span class="pill ${st.cls}">${st.label}</span><span class="edition-tag ${isJava(s) ? 'java' : 'bedrock'}">${esc(editionLabel(s))}</span>${uptime}</div>
       <div class="card-title">${esc(s.name)}</div>
       <div class="card-meta">${GAMEMODE[s.gamemode]} · ${DIFFICULTY[s.difficulty]} · 최대 ${s.maxPlayers}명 · 포트 ${s.port}</div>`;
 
     let body = '';
-    const versionNote = r.version && S.bds.current && r.version !== S.bds.current
+    const versionNote = !isJava(s) && r.version && S.bds.current && r.version !== S.bds.current
       ? ` · 재시작하면 ${esc(S.bds.current)}로 업데이트` : '';
+    const runningVersion = isJava(s)
+      ? `Java ${esc(r.version)} · 메모리 최대 ${fmtMem((s.memoryMB || 2048) * 1048576)}`
+      : `BDS ${esc(r.version)}${r.slot ? ` · 슬롯 ${r.slot}` : ''}${versionNote}`;
     switch (r.status) {
       case 'running':
         body = connectBlock(s);
-        if (!r.protect) body += '<div class="notice warn">비밀번호 보호가 꺼져 있어 주소를 아는 누구나 접속할 수 있습니다.</div>';
+        if (!r.protect) {
+          body += `<div class="notice warn">${isJava(s) && !javaProtectOk(r.version)
+            ? `이 버전(${esc(r.version)})은 비밀번호 보호를 쓸 수 없어 주소를 아는 누구나 접속할 수 있습니다. 화이트리스트를 쓰려면 콘솔에서 <code>whitelist on</code>, <code>whitelist add 이름</code>을 입력하세요.`
+            : '비밀번호 보호가 꺼져 있어 주소를 아는 누구나 접속할 수 있습니다.'}</div>`;
+        }
         body += playersBlock(s);
         body += `<dl class="details"><dt>메모리</dt><dd>${r.memBytes ? fmtMem(r.memBytes) : '측정 중'}</dd>
           <dt>포트</dt><dd>${portsText(s)}</dd>
-          <dt>버전</dt><dd>BDS ${esc(r.version)}${r.slot ? ` · 슬롯 ${r.slot}` : ''}${versionNote}</dd></dl>`;
+          <dt>버전</dt><dd>${runningVersion}</dd></dl>`;
         break;
       case 'orphaned':
         body = connectBlock(s);
-        body += '<div class="notice orphan">포털이 다시 시작되기 전부터 돌던 서버라 접속자 목록과 콘솔을 볼 수 없어요. 강제 종료한 뒤 다시 실행하면 정상적으로 관리됩니다.</div>';
+        body += `<div class="notice orphan">포털이 다시 시작되기 전부터 돌던 서버라 접속자 목록과 콘솔을 볼 수 없어요.${isJava(s) && r.protect ? ' 이 상태에서는 새로 접속한 사람이 비밀번호를 입력해도 인증되지 않습니다.' : ''} 강제 종료한 뒤 다시 실행하면 정상적으로 관리됩니다.</div>`;
         break;
       case 'preparing':
+        body = r.task && r.task.phase !== 'done' && r.task.phase !== 'error'
+          ? `<div class="progress-line"><span class="spinner"></span>Java ${esc(r.version)} ${esc(javaTaskText(r.task))}</div>
+             <div class="bar"><span data-w="${r.task.phase === 'download' ? r.task.percent : 100}"></span></div>`
+          : '<div class="progress-line"><span class="spinner"></span>서버를 켜는 중입니다… 접속 정보가 곧 표시됩니다.</div>';
+        break;
       case 'starting':
         body = '<div class="progress-line"><span class="spinner"></span>서버를 켜는 중입니다… 접속 정보가 곧 표시됩니다.</div>';
         break;
@@ -422,15 +507,16 @@
         break;
       default: {
         if (r.status === 'error' && r.error) body += `<div class="notice danger">${esc(r.error)}</div>`;
-        const pending = r.installedVersion && S.bds.current && r.installedVersion !== S.bds.current
-          ? `${esc(r.installedVersion)} → 다음 실행 때 ${esc(S.bds.current)}` : esc(r.installedVersion || S.bds.current || '—');
+        const password = !s.protect ? '보호 꺼짐 — 누구나 접속 가능'
+          : isJava(s) ? `실행할 때마다 새로 발급 · 채팅창에 ${JAVA_TRIGGER} &lt;비밀번호&gt;` : '실행할 때마다 새로 발급';
         body += `<dl class="details">
           <dt>월드</dt><dd>${r.worldExists ? '있음' : '처음 실행할 때 새로 만듭니다'}</dd>
-          <dt>비밀번호</dt><dd>${s.protect ? '실행할 때마다 새로 발급' : '보호 꺼짐 — 누구나 접속 가능'}</dd>
+          <dt>비밀번호</dt><dd>${password}</dd>
           <dt>포트</dt><dd>${portsText(s)}</dd>
+          ${isJava(s) ? `<dt>메모리</dt><dd>최대 ${fmtMem((s.memoryMB || 2048) * 1048576)}</dd>` : ''}
           ${s.levelSeed ? `<dt>시드</dt><dd class="mono">${esc(s.levelSeed)}</dd>` : ''}
           ${Object.keys(s.extraProperties || {}).length ? `<dt>상세 설정</dt><dd>${Object.keys(s.extraProperties).length}개 변경</dd>` : ''}
-          <dt>버전</dt><dd>${pending}</dd>
+          <dt>버전</dt><dd>${versionText(s)}</dd>
         </dl>`;
       }
     }
@@ -454,7 +540,7 @@
         foot = btn('kill', '강제 종료', ICON.zap, 'danger');
         break;
       default: {
-        const reason = startBlockReason();
+        const reason = startBlockReason(s);
         foot = btn('start', r.status === 'error' ? '다시 실행' : '실행', ICON.play, 'primary', Boolean(reason), reason || '')
           + btn('console', '로그', ICON.terminal) + btn('edit', '편집', ICON.edit) + btn('delete', '삭제', ICON.trash, 'ghost');
         if (reason) foot += `<span class="note">${esc(reason)}</span>`;
@@ -598,51 +684,162 @@
   }
 
   // ---------- server form ----------
-  const DEFAULTS = { name: '', gamemode: 'survival', difficulty: 'normal', maxPlayers: 10, levelSeed: '', port: '', udpPortStart: '', protect: true, onlineMode: true, allowCheats: false, viewDistance: 32, lanVisibility: false };
+  const DEFAULTS = { name: '', gamemode: 'survival', difficulty: 'normal', maxPlayers: 10, levelSeed: '', port: '', udpPortStart: '', protect: true, onlineMode: true, allowCheats: false, viewDistance: 32, lanVisibility: false, memoryMB: 2048, javaVersion: '' };
+  const EDITION_FORM = {
+    bedrock: { viewDistance: 32, viewMin: 6, viewMax: 96, viewNote: '낮을수록 메모리와 CPU를 덜 씁니다. 기본 32.' },
+    java: { viewDistance: 10, viewMin: 3, viewMax: 32, viewNote: '3~32. 낮을수록 메모리와 CPU를 덜 씁니다. 기본 10.' },
+  };
   let editingId = null;
+  let formEdition = 'bedrock';
+
+  // Releases newest first: Mojang's list when it could be fetched, plus whatever is already installed.
+  function javaVersionList(current) {
+    const set = new Set([...(S.java.releases || []), ...(S.java.installed || [])]);
+    if (current) set.add(current);
+    return [...set].sort((a, b) => cmpVersion(b, a));
+  }
+
+  function fillJavaVersions(select, current) {
+    const latest = S.java.latest;
+    select.innerHTML = javaVersionList(current).map((v) => {
+      const tags = [v === latest ? '최신' : '', S.java.installed.includes(v) ? '받아 둠' : ''].filter(Boolean);
+      return `<option value="${esc(v)}">${esc(v)}${tags.length ? ` (${tags.join(', ')})` : ''}</option>`;
+    }).join('') || '<option value="">버전 목록을 불러오지 못했습니다</option>';
+  }
+
+  // Shows the fields of the chosen edition and the notes that depend on the chosen Java version.
+  function applyEdition(edition, { resetDefaults = false } = {}) {
+    formEdition = edition;
+    const form = $('#server-form');
+    const f = form.elements;
+    const java = edition === 'java';
+    for (const el of $$('[data-edition]', form)) {
+      const on = el.dataset.edition === edition;
+      el.hidden = !on;
+      for (const input of $$('input, select', el)) input.disabled = !on;
+    }
+    const conf = EDITION_FORM[edition];
+    f.viewDistance.min = conf.viewMin;
+    f.viewDistance.max = conf.viewMax;
+    $('#view-note').textContent = conf.viewNote;
+    if (resetDefaults) f.viewDistance.value = conf.viewDistance;
+    f.port.placeholder = java ? `자동 (${S.settings.javaPortBase}부터)` : `자동 (${S.settings.portBase}부터)`;
+    $('#eula-row').hidden = !java || Boolean(S.eulaAcceptedAt);
+    f.agreeEula.disabled = $('#eula-row').hidden;
+    $('#edition-note').textContent = editingId
+      ? '에디션은 만든 뒤에 바꿀 수 없습니다.'
+      : java
+        ? 'Java Edition 플레이어(PC 런처)만 접속할 수 있습니다. 휴대폰·콘솔 친구는 Bedrock 서버로 만드세요.'
+        : 'Bedrock 플레이어(휴대폰·태블릿·Windows 앱·콘솔)가 접속합니다. PC Java Edition으로는 접속할 수 없습니다.';
+    applyJavaVersion();
+  }
+
+  function applyJavaVersion() {
+    const f = $('#server-form').elements;
+    const java = formEdition === 'java';
+    const v = f.javaVersion.value;
+    const protectOk = !java || javaProtectOk(v);
+    f.protect.disabled = !protectOk;
+    if (!protectOk) f.protect.checked = false;
+    $('#protect-desc').textContent = !protectOk
+      ? `— Java ${S.java.protectMinVersion} 이상에서만 쓸 수 있습니다. 이 버전은 화이트리스트(콘솔에서 whitelist add 이름)로 막으세요.`
+      : java
+        ? `— 실행할 때마다 새 비밀번호를 만들고, 접속한 사람은 채팅창에 ${JAVA_TRIGGER} <비밀번호>를 입력해야 플레이할 수 있습니다.`
+        : '— 실행할 때마다 새 비밀번호를 만들고, 접속한 사람은 비밀번호를 입력해야 플레이할 수 있습니다.';
+    if (java) {
+      const s = editingId ? serverById(editingId) : null;
+      const last = s?.runtime.installedVersion;
+      const notes = [];
+      if (v && !S.java.installed.includes(v)) notes.push('처음 실행할 때 Mojang에서 내려받습니다 (약 150MB, Java 실행 환경 포함).');
+      if (last && v && cmpVersion(v, last) < 0 && s?.runtime.worldExists) notes.push(`⚠ 월드가 ${last}에서 실행된 적이 있어 낮은 버전으로는 열 수 없습니다.`);
+      else if (last && v && v !== last) notes.push(`월드를 ${v}로 업그레이드합니다 (되돌릴 수 없으니 먼저 백업하세요).`);
+      notes.push('플레이어도 런처에서 같은 버전을 골라야 합니다.');
+      $('#java-version-note').textContent = notes.join(' ');
+    }
+  }
 
   function openServerForm(id) {
     const s = id ? serverById(id) : null;
     editingId = s ? id : null;
     const form = $('#server-form');
-    const v = s ? { ...DEFAULTS, ...s } : { ...DEFAULTS, name: `서버 ${(S?.servers.length || 0) + 1}` };
+    const edition = s ? s.edition || 'bedrock' : formEdition;
+    const v = s ? { ...DEFAULTS, ...s } : { ...DEFAULTS, ...EDITION_FORM[edition], name: `서버 ${(S?.servers.length || 0) + 1}`, javaVersion: S.java.latest || '' };
     $('#server-form-title').textContent = s ? '서버 편집' : '새 서버';
     $('#server-form-submit').textContent = s ? '저장' : '만들기';
+    fillJavaVersions(form.elements.javaVersion, v.javaVersion);
     for (const el of form.elements) {
       if (!el.name || !(el.name in v)) continue;
       if (el.type === 'checkbox') el.checked = Boolean(v[el.name]);
       else el.value = v[el.name] ?? '';
     }
+    for (const radio of $$('input[name="edition"]', form)) {
+      radio.checked = radio.value === edition;
+      radio.disabled = Boolean(s);
+    }
+    form.elements.agreeEula.checked = false;
     form.elements.levelSeed.disabled = Boolean(s);
     $('#seed-note').textContent = s ? '시드는 서버를 만들 때만 정할 수 있습니다.' : '월드를 처음 만들 때만 쓰입니다. 비우면 무작위입니다.';
     $('#server-form-error').hidden = true;
     $('#props-search').value = '';
     $('#props-changed').checked = false;
     $('#props-section').open = false;
+    applyEdition(edition);
     loadProps(s?.extraProperties || {});
     $('#dlg-server').showModal();
     form.elements.name.focus();
     form.elements.name.select();
   }
 
+  for (const radio of $$('#server-form input[name="edition"]')) {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      const f = $('#server-form').elements;
+      applyEdition(radio.value, { resetDefaults: true });
+      f.protect.checked = !f.protect.disabled;
+      loadProps(collectPropsIfReady());
+    });
+  }
+  $('#server-form').elements.javaVersion.addEventListener('change', () => {
+    const f = $('#server-form').elements;
+    const wasDisabled = f.protect.disabled;
+    applyJavaVersion();
+    if (wasDisabled && !f.protect.disabled) f.protect.checked = true;
+    loadProps(collectPropsIfReady());
+  });
+
   // ---------- all server.properties options ----------
   let propsSchema = null;
   let propsReady = false;
+  let propsRequest = 0;
+
+  const propsTarget = () => (formEdition === 'java'
+    ? { edition: 'java', version: $('#server-form').elements.javaVersion.value }
+    : { edition: 'bedrock', version: S?.bds.current });
+
+  function collectPropsIfReady() {
+    return propsReady ? collectProps() : (editingId ? serverById(editingId)?.extraProperties || {} : {});
+  }
 
   async function loadProps(values) {
     propsReady = false;
+    const req = ++propsRequest;
     const list = $('#props-list');
     $('#props-fixed').innerHTML = '';
     $('#props-count').textContent = '';
+    const want = propsTarget();
     try {
-      if (!propsSchema || propsSchema.version !== S?.bds.current) {
+      if (!propsSchema || propsSchema.edition !== want.edition || propsSchema.version !== want.version) {
         list.innerHTML = '<p class="props-empty">설정 목록을 불러오는 중…</p>';
-        propsSchema = await api('GET', '/api/server-properties');
+        const qs = want.edition === 'java' ? `?edition=java&version=${encodeURIComponent(want.version || '')}` : '';
+        const schema = await api('GET', `/api/server-properties${qs}`);
+        if (req !== propsRequest) return;
+        propsSchema = schema;
       }
     } catch (ex) {
-      list.innerHTML = `<p class="props-empty">${esc(ex.message)}</p>`;
+      if (req === propsRequest) list.innerHTML = `<p class="props-empty">${esc(ex.message)}</p>`;
       return;
     }
+    if (req !== propsRequest) return;
     renderProps(values);
     propsReady = true;
   }
@@ -740,6 +937,7 @@
     e.preventDefault();
     const form = e.currentTarget;
     const f = form.elements;
+    const java = formEdition === 'java';
     const body = {
       name: f.name.value,
       gamemode: f.gamemode.value,
@@ -748,11 +946,18 @@
       viewDistance: Number(f.viewDistance.value),
       protect: f.protect.checked,
       onlineMode: f.onlineMode.checked,
-      allowCheats: f.allowCheats.checked,
-      lanVisibility: f.lanVisibility.checked,
     };
+    if (java) {
+      body.javaVersion = f.javaVersion.value;
+      body.memoryMB = Number(f.memoryMB.value);
+      if (f.agreeEula.checked) body.agreeEula = true;
+    } else {
+      body.allowCheats = f.allowCheats.checked;
+      body.lanVisibility = f.lanVisibility.checked;
+      if (f.udpPortStart.value !== '') body.udpPortStart = Number(f.udpPortStart.value);
+    }
+    if (!editingId) body.edition = formEdition;
     if (f.port.value !== '') body.port = Number(f.port.value);
-    if (f.udpPortStart.value !== '') body.udpPortStart = Number(f.udpPortStart.value);
     if (!editingId) body.levelSeed = f.levelSeed.value;
     // Only send the option list once it has loaded, so a failed load can't wipe saved settings.
     if (propsReady) body.extraProperties = collectProps();
@@ -761,6 +966,7 @@
     const submit = $('#server-form-submit');
     submit.disabled = true;
     try {
+      if (java && !S.eulaAcceptedAt && !body.agreeEula) throw new Error('Java 서버를 실행하려면 Minecraft EULA에 동의해야 합니다.');
       if (editingId) await api('PATCH', `/api/servers/${editingId}`, body);
       else await api('POST', '/api/servers', body);
       $('#dlg-server').close();
@@ -797,6 +1003,10 @@
     $('#public-host').value = st.publicHost || '';
     $('#port-base').value = st.portBase;
     $('#udp-base').value = st.udpPortBase;
+    $('#java-port-base').value = st.javaPortBase;
+    $('#java-eula').checked = false;
+    fillJavaVersions($('#java-pick'), null);
+    $('#java-pick').value = S.java.latest || $('#java-pick').value;
     $('#auth-timeout').value = st.authTimeoutSec;
     $('#auth-fails').value = st.authMaxFails;
 
@@ -867,11 +1077,55 @@
     const upToDate = Boolean(b.current && b.latest && b.current === b.latest);
     install.textContent = busy ? '설치 중…' : upToDate ? '최신 버전이 설치되어 있습니다' : b.latest ? `BDS ${b.latest} 내려받기` : '최신 버전 내려받기';
     install.disabled = busy || upToDate || !$('#bds-eula').checked;
+    renderJavaSettings();
+  }
+
+  function renderJavaSettings() {
+    const j = S.java;
+    const uses = (v) => S.servers.filter((s) => isJava(s) && s.javaVersion === v).length;
+    let html = '<div class="bds-status">';
+    if (!j.platformSupported) html += '<div class="form-error">Mojang이 이 운영체제용 Java 실행 환경을 제공하지 않아 Java 서버를 실행할 수 없습니다.</div>';
+    html += `<div>최신 릴리스: <b>${j.latest ? `Java Edition ${esc(j.latest)}` : '확인 못 함'}</b> · 고를 수 있는 버전 ${esc(j.minVersion)} 이상 (비밀번호 보호는 ${esc(j.protectMinVersion)} 이상)</div>`;
+    if (j.error) html += `<div class="muted">${esc(j.error)}</div>`;
+    html += `<div>받아 둔 버전: ${j.installed.length
+      ? j.installed.map((v) => `<span class="chip">${esc(v)}${uses(v) ? ` · 서버 ${uses(v)}개` : ''}</span>`).join(' ')
+      : '<span class="muted">없음</span>'}</div>`;
+    if (j.runtimes.length) {
+      html += `<div class="muted">Java 실행 환경: ${j.runtimes.map((r) => `Java ${esc(r.version || r.component)}`).join(', ')}</div>`;
+    }
+    for (const t of Object.values(j.tasks)) {
+      if (t.phase === 'download' || t.phase === 'extract') {
+        html += `<div>Java ${esc(t.version)}: ${esc(javaTaskText(t))}</div><div class="bar"><span data-w="${t.phase === 'download' ? t.percent : 100}"></span></div>`;
+      } else if (t.phase === 'error') {
+        html += `<div class="form-error">Java ${esc(t.version)} 내려받기 실패: ${esc(t.error)}</div>`;
+      }
+    }
+    html += `<div class="muted">${S.eulaAcceptedAt ? `Minecraft EULA 동의함 (${esc(new Date(S.eulaAcceptedAt).toLocaleDateString('ko-KR'))})` : 'Minecraft EULA에 아직 동의하지 않았습니다.'}</div>`;
+    html += '</div>';
+    patch($('#java-status'), html);
+    $('#java-eula-row').hidden = Boolean(S.eulaAcceptedAt);
+    const pick = $('#java-pick').value;
+    const busy = Boolean(j.tasks[pick] && (j.tasks[pick].phase === 'download' || j.tasks[pick].phase === 'extract'));
+    const btn = $('#java-install');
+    btn.textContent = busy ? '내려받는 중…' : j.installed.includes(pick) ? '받아 둔 버전입니다' : `Java ${pick} 내려받기`;
+    btn.disabled = !pick || busy || j.installed.includes(pick) || !j.platformSupported || (!S.eulaAcceptedAt && !$('#java-eula').checked);
   }
 
   for (const id of ['#est-ram', '#max-range', '#max-auto', '#bds-eula']) {
     $(id).addEventListener('input', renderSettingsLive);
   }
+  $('#java-eula').addEventListener('input', renderJavaSettings);
+  $('#java-pick').addEventListener('change', renderJavaSettings);
+  $('#java-check').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+    const v = await api('GET', '/api/java/versions');
+    fillJavaVersions($('#java-pick'), $('#java-pick').value);
+    toast(`Java Edition 최신 릴리스는 ${v.latest}입니다.`);
+  }));
+  $('#java-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+    const version = $('#java-pick').value;
+    await api('POST', '/api/java/install', { version, agreeEula: $('#java-eula').checked });
+    toast(`Java ${version} 내려받기를 시작했습니다.`);
+  }));
 
   $('#settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -885,6 +1139,7 @@
         publicHost: $('#public-host').value,
         portBase: Number($('#port-base').value),
         udpPortBase: Number($('#udp-base').value),
+        javaPortBase: Number($('#java-port-base').value),
         authTimeoutSec: Number($('#auth-timeout').value),
         authMaxFails: Number($('#auth-fails').value),
       });
@@ -928,8 +1183,9 @@
     if (text.startsWith('[포털]')) return 'l-portal';
     if (text.startsWith('> ')) return 'l-cmd';
     if (/\[Scripting\] MCF_/.test(text)) return 'l-script';
-    if (/ ERROR\]|Exception|Crash/.test(text)) return 'l-error';
-    if (/ WARN\]/.test(text)) return 'l-warn';
+    // Bedrock: "[… ERROR]", Java: "[Server thread/ERROR]".
+    if (/[ /](ERROR|FATAL)\]|Exception|Crash/.test(text)) return 'l-error';
+    if (/[ /]WARN\]/.test(text)) return 'l-warn';
     return '';
   }
 

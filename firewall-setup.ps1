@@ -1,9 +1,9 @@
 ﻿<#
   마인크래프트 서버 팜 - Windows 방화벽 규칙 등록 (한 번만 실행하면 됩니다)
 
-  포털은 서버를 항상 data\slots\1 ~ 32 폴더에서 실행합니다. 이 스크립트는 그 32개 실행 파일과
-  웹 포털(node.exe, TCP 8080)에 대해 미리 "허용" 규칙을 만들어, 서버를 켤 때마다 Windows가
-  "액세스를 허용하시겠습니까?" 창을 띄우지 않게 합니다.
+  포털은 Bedrock 서버를 항상 data\slots\1 ~ 32 폴더에서 실행하고, Java 서버는 data\java\runtime 아래의
+  java.exe로 실행합니다. 이 스크립트는 그 실행 파일들과 웹 포털(node.exe, TCP 8080)에 대해 미리 "허용" 규칙을
+  만들어, 서버를 켤 때마다 Windows가 "액세스를 허용하시겠습니까?" 창을 띄우지 않게 합니다.
 
   - 관리자 권한이 필요합니다. 일반 권한으로 실행하면 권한 확인 창(UAC)을 띄웁니다.
   - 이 프로젝트의 data 폴더 아래 실행 파일에 대해 예전에 생긴 규칙(확인 창에서 만들어진 것)은 지우고 새로 만듭니다.
@@ -73,6 +73,22 @@ try {
       -Description '마인크래프트 서버 팜 포털이 이 슬롯에서 실행하는 Bedrock 서버' | Out-Null
   }
 
+  # Java Edition servers run as java.exe of the Java runtime the portal downloads from Mojang for each game version
+  # (data\java\runtime\<name>). Rules for the runtimes Minecraft 1.18.2 ~ 26.x use are made in advance (a rule may
+  # name a file that doesn't exist yet); if Mojang adds a new one later, the portal says so — run this script again.
+  $runtimeDir = Join-Path $DataDir 'java\runtime'
+  $javaRuntimes = @('java-runtime-beta', 'java-runtime-gamma', 'java-runtime-delta', 'java-runtime-epsilon')
+  if (Test-Path $runtimeDir) {
+    $javaRuntimes += @(Get-ChildItem $runtimeDir -Directory | Where-Object { $_.Name -notlike '*.tmp' } | ForEach-Object { $_.Name })
+  }
+  $javaRuntimes = @($javaRuntimes | Sort-Object -Unique)
+  foreach ($name in $javaRuntimes) {
+    $exe = Join-Path $runtimeDir "$name\bin\java.exe"
+    New-NetFirewallRule -DisplayName "Minecraft Server Farm - Java ($name)" -Group $Group -Direction Inbound `
+      -Action Allow -Program $exe -Profile $profiles `
+      -Description '마인크래프트 서버 팜 포털이 실행하는 Java Edition 서버' | Out-Null
+  }
+
   $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
   if ($node) {
     New-NetFirewallRule -DisplayName 'Minecraft Server Farm - 웹 포털' -Group $Group -Direction Inbound `
@@ -83,6 +99,7 @@ try {
   Write-Host ''
   Write-Host '완료했습니다.' -ForegroundColor Green
   Write-Host "  서버 슬롯 1~$Slots 허용 규칙: $DataDir\slots\<번호>\bedrock_server.exe"
+  Write-Host "  Java 서버 허용 규칙 $($javaRuntimes.Count)개: $runtimeDir\<이름>\bin\java.exe"
   if ($node) { Write-Host "  웹 포털 허용 규칙: $node (TCP $PortalPort)" }
   else { Write-Host '  node.exe를 찾지 못해 웹 포털 규칙은 만들지 않았습니다.' -ForegroundColor Yellow }
   Write-Host "  지운 예전 규칙: $($old.Count + $prompted.Count)개"
