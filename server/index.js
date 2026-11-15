@@ -13,6 +13,9 @@ const system = require('./system');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
+// Reverse proxies (e.g. nginx doing HTTPS) whose X-Forwarded-For / X-Forwarded-Proto headers are believed.
+// Comma-separated IPs or subnets. Unset = no proxy is trusted and headers are ignored, so they can't be spoofed.
+const TRUST_PROXY = (process.env.TRUST_PROXY || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 const store = new Store();
 const auth = new Auth(store);
@@ -22,6 +25,14 @@ const firewall = new FirewallCheck();
 
 const app = express();
 app.disable('x-powered-by');
+if (TRUST_PROXY.length) {
+  try {
+    app.set('trust proxy', TRUST_PROXY);
+  } catch (err) {
+    console.error(`TRUST_PROXY 값이 올바르지 않습니다 (${process.env.TRUST_PROXY}): ${err.message}`);
+    process.exit(1);
+  }
+}
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -36,7 +47,9 @@ app.use(express.json({ limit: '64kb' }));
 app.use(express.static(PUBLIC_DIR, { index: 'index.html', maxAge: 0 }));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-const clientIp = (req) => req.socket.remoteAddress || 'unknown';
+// With TRUST_PROXY set, req.ip is the real visitor from X-Forwarded-For; otherwise it is the socket address.
+// Behind a proxy without it, every visitor would share the proxy's IP and one lockout would lock out everyone.
+const clientIp = (req) => req.ip || req.socket.remoteAddress || 'unknown';
 
 // ---------- auth ----------
 app.get('/api/auth/status', (req, res) => {
@@ -330,6 +343,7 @@ app.listen(PORT, HOST, () => {
   const lan = system.lanAddresses().filter((a) => !a.virtual);
   console.log('마인크래프트 서버 팜 포털이 시작되었습니다.');
   console.log(`  이 PC:  http://localhost:${PORT}`);
+  if (TRUST_PROXY.length) console.log(`  신뢰하는 프록시: ${TRUST_PROXY.join(', ')}`);
   for (const a of lan) console.log(`  LAN:    http://${a.address}:${PORT}  (${a.iface})`);
   if (auth.setupRequired) console.log('  처음 접속하면 관리자 비밀번호를 설정합니다.');
 });

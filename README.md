@@ -172,6 +172,28 @@ data/              실행 중 생기는 데이터 (git에서 제외)
 | `PORT` | `8080` | 포털 웹 포트 |
 | `HOST` | `0.0.0.0` | 포털이 열릴 주소 (`127.0.0.1`이면 이 PC에서만 접속) |
 | `MCF_DATA_DIR` | `./data` | 데이터 폴더 위치 |
+| `TRUST_PROXY` | (없음) | 포털 앞에 둔 리버스 프록시(nginx 등)의 IP. 쉼표로 여러 개 가능. 아래 참고 |
+
+### nginx 등 리버스 프록시 뒤에서 쓸 때
+
+`TRUST_PROXY`에 프록시 IP를 넣어야 합니다 (예: `setx TRUST_PROXY 192.168.0.44` 후 포털 재시작). 넣지 않으면 모든 접속이 프록시 IP로 보여서, 누군가 로그인을 여러 번 틀리면 **모든 사람이** 10분간 잠기고, HTTPS여도 로그인 쿠키에 `Secure`가 붙지 않습니다. 프록시는 `X-Forwarded-For`, `X-Forwarded-Proto`를 보내야 합니다.
+
+포털은 상대 경로로 동작하므로 `https://example.com/mc/` 같은 하위 경로에도 둘 수 있습니다. 실시간 상태(`api/events`)는 SSE라서 버퍼링을 꺼야 합니다.
+
+```nginx
+location = /mc { return 301 /mc/; }
+location /mc/ {
+    proxy_pass http://<포털PC_IP>:8080/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+}
+```
+
+게임 접속(TCP/UDP)은 프록시를 거치지 말고 공유기에서 이 PC로 직접 포트포워딩하세요. NetherNet은 서버가 자기 주소를 클라이언트에 직접 알려 주므로 중계하면 접속이 안 될 수 있습니다.
 
 ## 접속 오류 「Terracotta」 (InitialConnection-149)
 
