@@ -669,7 +669,8 @@
     const groups = s.groups.map((g) => {
       const rows = s.properties.filter((p) => p.group === g.id).map((p) => {
         const search = `${p.label} ${p.key} ${p.help} ${p.english}`.toLowerCase();
-        const range = p.min !== undefined || p.max !== undefined ? ` · 범위 ${p.min ?? ''}~${p.max ?? ''}` : '';
+        const range = p.min !== undefined && p.max !== undefined ? ` · 범위 ${p.min}~${p.max}`
+          : p.min !== undefined ? ` · ${p.min} 이상` : p.max !== undefined ? ` · ${p.max} 이하` : '';
         return `<div class="prop" data-key="${esc(p.key)}" data-search="${esc(search)}">
           <div class="prop-head"><label for="prop-${esc(p.key)}">${esc(p.label)}</label><span class="prop-badge" hidden>변경됨</span></div>
           ${propControl(p, values[p.key])}
