@@ -1,0 +1,36 @@
+# systemd 서비스 예시 — 부팅할 때 포털을 자동으로 켜고, 끌 때 마인크래프트 서버를 저장한 뒤 정지합니다.
+#
+# 설치 (경로·사용자는 환경에 맞게 바꾸세요):
+#   sudo cp linux/minecraft-server-farm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now minecraft-server-farm
+# 로그 보기:  journalctl -u minecraft-server-farm -f
+
+[Unit]
+Description=Minecraft Bedrock server farm portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 포털을 실행할 일반 사용자 (root로 실행하지 마세요)
+User=minecraft
+Group=minecraft
+WorkingDirectory=/opt/minecraft-server-farm
+# `command -v node`로 확인한 node 경로
+ExecStart=/usr/bin/node server/index.js
+Environment=PORT=8080
+
+# 정지할 때 SIGTERM은 포털에만 보냅니다. 포털이 각 서버에 stop을 보내 월드를 저장하고 끕니다.
+# 시간 안에 끝나지 않고 남은 프로세스만 SIGKILL로 정리합니다.
+# 지우지 마세요: 기본값(control-group)이면 마인크래프트 서버도 SIGTERM을 직접 받는데, BDS는 SIGTERM을 받으면
+# 월드를 저장하지 않고 바로 꺼집니다 (테스트로 확인함).
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

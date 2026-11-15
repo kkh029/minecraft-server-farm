@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>마인크래프트 서버 팜</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <!-- 로그인 / 최초 설정 -->
+  <div id="auth" class="auth" hidden>
+    <form id="auth-form" class="auth-card" autocomplete="on">
+      <div class="brand brand-lg"><span class="logo" aria-hidden="true"></span><span>마인크래프트 서버 팜</span></div>
+      <h1 id="auth-title">관리자 로그인</h1>
+      <p id="auth-desc" class="muted">포털 관리자 비밀번호를 입력하세요.</p>
+      <input type="text" name="username" value="admin" autocomplete="username" hidden>
+      <label class="field">
+        <span>비밀번호</span>
+        <input id="auth-pw" type="password" autocomplete="current-password" required minlength="1">
+      </label>
+      <label class="field" id="auth-pw2-wrap" hidden>
+        <span>비밀번호 확인</span>
+        <input id="auth-pw2" type="password" autocomplete="new-password">
+      </label>
+      <p id="auth-error" class="form-error" hidden></p>
+      <button class="btn primary block" type="submit" id="auth-submit">로그인</button>
+    </form>
+  </div>
+
+  <!-- 대시보드 -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="wrap topbar-inner">
+        <div class="brand"><span class="logo" aria-hidden="true"></span><span>서버 팜</span></div>
+        <span id="bds-chip" class="chip"></span>
+        <span id="conn" class="conn" title="실시간 연결 상태"></span>
+        <div class="spacer"></div>
+        <button id="btn-settings" class="btn ghost" type="button"></button>
+        <button id="btn-logout" class="btn ghost" type="button"></button>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section id="stats" class="stats" aria-label="시스템 상태"></section>
+      <div id="banners"></div>
+
+      <div class="section-head">
+        <h2>서버 <span id="server-count" class="count"></span></h2>
+        <button id="btn-new" class="btn primary" type="button"></button>
+      </div>
+      <section id="servers" class="grid" aria-live="polite"></section>
+      <div id="empty" class="empty" hidden>
+        <p class="empty-title">아직 서버가 없어요</p>
+        <p class="muted">「새 서버」로 첫 월드를 만들어 보세요. 서버마다 따로 월드와 포트를 가집니다.</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- 서버 추가/편집 -->
+  <dialog id="dlg-server" class="dialog dialog-wide">
+    <form id="server-form" method="dialog" class="dialog-body">
+      <header class="dialog-head">
+        <h3 id="server-form-title">새 서버</h3>
+        <button type="button" class="icon-btn" data-close aria-label="닫기"></button>
+      </header>
+      <div class="dialog-scroll">
+        <label class="field">
+          <span>서버 이름</span>
+          <input name="name" maxlength="40" required placeholder="예: 우리반 야생">
+          <small>마인크래프트 서버 목록에 보이는 이름입니다.</small>
+        </label>
+        <div class="row2">
+          <label class="field">
+            <span>게임 모드</span>
+            <select name="gamemode">
+              <option value="survival">서바이벌</option>
+              <option value="creative">크리에이티브</option>
+              <option value="adventure">어드벤처</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>난이도</span>
+            <select name="difficulty">
+              <option value="peaceful">평화로움</option>
+              <option value="easy">쉬움</option>
+              <option value="normal">보통</option>
+              <option value="hard">어려움</option>
+            </select>
+          </label>
+        </div>
+        <div class="row2">
+          <label class="field">
+            <span>최대 인원</span>
+            <input name="maxPlayers" type="number" min="1" max="100" required>
+          </label>
+          <label class="field">
+            <span>포트</span>
+            <input name="port" type="number" min="1024" max="65534" placeholder="자동">
+            <small>비우면 자동으로 정합니다.</small>
+          </label>
+        </div>
+        <label class="field">
+          <span>월드 시드</span>
+          <input name="levelSeed" maxlength="32" placeholder="비우면 무작위">
+          <small id="seed-note">월드를 처음 만들 때만 쓰입니다.</small>
+        </label>
+        <label class="check">
+          <input type="checkbox" name="protect">
+          <span><b>비밀번호 보호</b> <span class="muted">— 실행할 때마다 새 비밀번호를 만들고, 접속한 사람은 비밀번호를 입력해야 플레이할 수 있습니다.</span></span>
+        </label>
+        <details class="advanced">
+          <summary>고급 설정</summary>
+          <label class="check">
+            <input type="checkbox" name="onlineMode">
+            <span>Xbox 계정 인증 <span class="muted">— 끄면 계정 확인 없이 접속됩니다. 켜 두는 것을 권장합니다.</span></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="allowCheats">
+            <span>치트(명령어) 허용</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="lanVisibility">
+            <span>같은 네트워크(LAN)에 서버 표시 <span class="muted">— 한 PC에서는 먼저 켠 서버 하나만 표시됩니다.</span></span>
+          </label>
+          <div class="row2">
+            <label class="field">
+              <span>최대 시야 거리 (청크)</span>
+              <input name="viewDistance" type="number" min="6" max="96">
+              <small>낮을수록 메모리와 CPU를 덜 씁니다. 기본 32.</small>
+            </label>
+            <label class="field">
+              <span>게임용 UDP 시작 포트</span>
+              <input name="udpPortStart" type="number" min="1024" max="65519" placeholder="자동">
+              <small>여기서부터 16개를 씁니다. 비우면 자동.</small>
+            </label>
+          </div>
+        </details>
+        <details class="advanced" id="props-section">
+          <summary>전체 서버 설정 <span class="muted">(server.properties)</span> <span id="props-count" class="props-count"></span></summary>
+          <div class="props-tools">
+            <input id="props-search" type="search" placeholder="설정 검색 — 이름, 설명, 키" autocomplete="off">
+            <label class="check"><input type="checkbox" id="props-changed"><span>바꾼 것만</span></label>
+          </div>
+          <p class="hint">비워 두면 기본값을 씁니다. 바꾼 값은 서버를 다음에 실행할 때 적용됩니다.</p>
+          <div id="props-list"></div>
+          <div id="props-fixed" class="props-fixed"></div>
+        </details>
+        <p class="form-error" id="server-form-error" hidden></p>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" class="btn" data-close>취소</button>
+        <button type="submit" class="btn primary" id="server-form-submit">만들기</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- 설정 -->
+  <dialog id="dlg-settings" class="dialog dialog-wide">
+    <div class="dialog-body">
+      <header class="dialog-head">
+        <h3>설정</h3>
+        <button type="button" class="icon-btn" data-close aria-label="닫기"></button>
+      </header>
+      <div class="dialog-scroll">
+        <form id="settings-form">
+          <section class="set-section">
+            <h4>동시 실행 수</h4>
+            <p class="muted" id="sizing-text"></p>
+            <div class="slider-row">
+              <input type="range" id="max-range" min="1" max="16" step="1">
+              <output id="max-out" class="slider-out"></output>
+            </div>
+            <div class="slider-scale" id="max-scale"></div>
+            <label class="check">
+              <input type="checkbox" id="max-auto">
+              <span>시스템 사양에 맞춰 자동 (권장값 사용)</span>
+            </label>
+            <label class="field narrow">
+              <span>서버 1대당 예상 메모리 (GB)</span>
+              <input type="number" id="est-ram" min="0.25" max="16" step="0.25">
+              <small id="est-ram-note"></small>
+            </label>
+          </section>
+
+          <section class="set-section">
+            <h4>접속 주소</h4>
+            <div class="row2">
+              <label class="field">
+                <span>LAN 주소 (같은 와이파이·공유기)</span>
+                <select id="lan-host"></select>
+              </label>
+              <label class="field">
+                <span>외부 주소 (선택)</span>
+                <input id="public-host" placeholder="예: myserver.ddns.net 또는 공인 IP">
+              </label>
+            </div>
+            <p class="hint">인터넷으로 친구가 접속하려면 공유기에서 각 서버의 <b>접속 포트(TCP)</b>와 <b>게임용 UDP 포트 범위</b>를 이 PC로 포트포워딩해야 합니다. 두 번호는 서버 카드에 나옵니다.</p>
+            <div id="fw-status" class="fw-status"></div>
+            <div class="row2">
+              <label class="field">
+                <span>접속 포트 시작 번호 (TCP)</span>
+                <input type="number" id="port-base" min="1024" max="65000">
+                <small>새 서버는 이 번호부터 2씩 늘려가며 비어 있는 포트를 받습니다.</small>
+              </label>
+              <label class="field">
+                <span>게임용 UDP 포트 시작 번호</span>
+                <input type="number" id="udp-base" min="1024" max="65000">
+                <small>새 서버마다 여기서부터 16개씩 범위를 받습니다.</small>
+              </label>
+            </div>
+          </section>
+
+          <section class="set-section">
+            <h4>비밀번호 인증</h4>
+            <div class="row2">
+              <label class="field">
+                <span>입력 제한 시간 (초)</span>
+                <input type="number" id="auth-timeout" min="30" max="600">
+              </label>
+              <label class="field">
+                <span>틀려도 되는 횟수</span>
+                <input type="number" id="auth-fails" min="1" max="20">
+              </label>
+            </div>
+            <small class="muted">시간이 지나거나 횟수를 넘기면 강퇴됩니다. 다음 실행부터 적용됩니다.</small>
+          </section>
+
+          <p class="form-error" id="settings-error" hidden></p>
+          <div class="set-actions">
+            <button type="submit" class="btn primary">설정 저장</button>
+          </div>
+        </form>
+
+        <section class="set-section" id="bds-section">
+          <h4>서버 프로그램 (Bedrock Dedicated Server)</h4>
+          <div id="bds-status"></div>
+          <div class="bds-actions">
+            <label class="field narrow">
+              <span>사용할 버전</span>
+              <select id="bds-current"></select>
+            </label>
+            <button type="button" class="btn" id="bds-check">최신 버전 확인</button>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="bds-eula">
+            <span><a href="https://www.minecraft.net/eula" target="_blank" rel="noopener noreferrer">Minecraft 최종 사용자 사용권 계약(EULA)</a>과 <a href="https://go.microsoft.com/fwlink/?LinkId=521839" target="_blank" rel="noopener noreferrer">개인정보처리방침</a>에 동의합니다.</span>
+          </label>
+          <button type="button" class="btn primary" id="bds-install">최신 버전 내려받기</button>
+          <p class="hint">플레이어의 마인크래프트가 업데이트되면 서버도 같은 버전이어야 접속할 수 있습니다. 새 버전은 서버를 다음에 실행할 때 적용되고, 월드는 그대로 유지됩니다.</p>
+        </section>
+
+        <section class="set-section">
+          <h4>관리자 비밀번호 변경</h4>
+          <form id="pw-form" class="row2">
+            <input type="text" name="username" value="admin" autocomplete="username" hidden>
+            <label class="field">
+              <span>현재 비밀번호</span>
+              <input type="password" id="pw-current" autocomplete="current-password" required>
+            </label>
+            <label class="field">
+              <span>새 비밀번호 (8자 이상)</span>
+              <input type="password" id="pw-next" autocomplete="new-password" minlength="8" required>
+            </label>
+            <div class="set-actions full">
+              <button type="submit" class="btn">비밀번호 변경</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 콘솔 -->
+  <dialog id="dlg-console" class="dialog dialog-wide">
+    <div class="dialog-body">
+      <header class="dialog-head">
+        <h3 id="console-title">콘솔</h3>
+        <span id="console-status"></span>
+        <div class="spacer"></div>
+        <button type="button" class="icon-btn" data-close aria-label="닫기"></button>
+      </header>
+      <div class="console-players" id="console-players"></div>
+      <div class="log" id="console-log" role="log" aria-live="off"></div>
+      <form id="console-form" class="console-form">
+        <span class="prompt" aria-hidden="true">/</span>
+        <input id="console-input" autocomplete="off" spellcheck="false" placeholder="서버 명령어 (예: list, say 안녕, time set day)">
+        <button class="btn primary" type="submit">보내기</button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- 확인 -->
+  <dialog id="dlg-confirm" class="dialog dialog-small">
+    <form method="dialog" class="dialog-body">
+      <header class="dialog-head"><h3 id="confirm-title">확인</h3></header>
+      <div class="dialog-scroll"><p id="confirm-text"></p></div>
+      <footer class="dialog-foot">
+        <button value="cancel" class="btn">취소</button>
+        <button value="ok" class="btn primary" id="confirm-ok">확인</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" popover="manual" aria-live="polite"></div>
+</body>
+</html>
