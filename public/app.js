@@ -74,7 +74,7 @@
     try {
       data = await res.json();
     } catch { /* empty body */ }
-    if (res.status === 401 && !url.startsWith('/api/auth')) {
+    if (res.status === 401 && !url.startsWith('api/auth')) {
       showAuth('login');
     }
     if (!res.ok) throw new Error(data?.error || `요청에 실패했습니다 (${res.status})`);
@@ -169,9 +169,9 @@
       if (authMode === 'setup') {
         if (pw.length < 8) throw new Error('비밀번호는 8자 이상이어야 합니다.');
         if (pw !== $('#auth-pw2').value) throw new Error('비밀번호 확인이 일치하지 않습니다.');
-        await api('POST', '/api/auth/setup', { password: pw });
+        await api('POST', 'api/auth/setup', { password: pw });
       } else {
-        await api('POST', '/api/auth/login', { password: pw });
+        await api('POST', 'api/auth/login', { password: pw });
       }
       showApp();
     } catch (ex) {
@@ -188,7 +188,7 @@
 
   function connect() {
     if (es) es.close();
-    es = new EventSource('/api/events');
+    es = new EventSource('api/events');
     es.addEventListener('open', () => setConn(true));
     es.addEventListener('state', (e) => {
       S = JSON.parse(e.data);
@@ -205,7 +205,7 @@
     es.onerror = async () => {
       setConn(false);
       try {
-        const st = await api('GET', '/api/auth/status');
+        const st = await api('GET', 'api/auth/status');
         if (!st.authenticated) showAuth(st.setupRequired ? 'setup' : 'login');
       } catch { /* portal offline; EventSource keeps retrying */ }
     };
@@ -609,18 +609,18 @@
     const s = id ? serverById(id) : null;
     switch (action) {
       case 'start':
-        return withBusy(btn, () => api('POST', `/api/servers/${id}/start`));
+        return withBusy(btn, () => api('POST', `api/servers/${id}/start`));
       case 'stop':
-        return withBusy(btn, () => api('POST', `/api/servers/${id}/stop`));
+        return withBusy(btn, () => api('POST', `api/servers/${id}/stop`));
       case 'kill':
         if (await confirmBox('강제 종료', '정상 종료를 기다리지 않고 바로 끕니다. 마지막 몇 초간의 진행 상황이 저장되지 않을 수 있어요.', '강제 종료')) {
-          return withBusy(btn, () => api('POST', `/api/servers/${id}/kill`));
+          return withBusy(btn, () => api('POST', `api/servers/${id}/kill`));
         }
         return;
       case 'pin':
         if (await confirmBox('새 비밀번호 발급', '이미 인증하고 플레이 중인 사람은 그대로 계속할 수 있고, 새로 접속하는 사람은 새 비밀번호를 입력해야 합니다.', '발급')) {
           return withBusy(btn, async () => {
-            const { pin } = await api('POST', `/api/servers/${id}/pin`);
+            const { pin } = await api('POST', `api/servers/${id}/pin`);
             toast(`새 비밀번호: ${pin}`);
           });
         }
@@ -638,21 +638,21 @@
       case 'delete':
         if (s && await confirmBox('서버 삭제', `「${esc(s.name)}」 서버를 삭제할까요?<br><br>월드와 설정은 바로 지워지지 않고 <b>data/trash</b> 폴더로 옮겨집니다. 필요하면 그곳에서 복구하거나 직접 지울 수 있어요.`, '삭제', true)) {
           return withBusy(btn, async () => {
-            await api('DELETE', `/api/servers/${id}`);
+            await api('DELETE', `api/servers/${id}`);
             toast('서버를 삭제했습니다.');
           });
         }
         return;
       case 'kick':
         if (await confirmBox('플레이어 퇴장', `${esc(btn.dataset.name)} 님을 서버에서 내보낼까요?`, '내보내기')) {
-          return withBusy(btn, () => api('POST', `/api/servers/${id}/kick`, { name: btn.dataset.name }));
+          return withBusy(btn, () => api('POST', `api/servers/${id}/kick`, { name: btn.dataset.name }));
         }
         return;
       case 'open-bds':
         return openSettings(true);
       case 'fw-check':
         return withBusy(btn, async () => {
-          const fw = await api('POST', '/api/firewall/check');
+          const fw = await api('POST', 'api/firewall/check');
           toast(fw.ok ? '방화벽 규칙이 확인되었습니다.' : fw.error || '아직 방화벽 규칙이 없습니다.', fw.ok ? '' : 'error');
         });
       default:
@@ -665,7 +665,7 @@
   $('#btn-settings').addEventListener('click', () => openSettings(false));
   $('#btn-logout').innerHTML = `${ICON.logout}<span class="label">로그아웃</span>`;
   $('#btn-logout').addEventListener('click', async () => {
-    await api('POST', '/api/auth/logout').catch(() => {});
+    await api('POST', 'api/auth/logout').catch(() => {});
     showAuth('login');
   });
   for (const b of $$('.icon-btn[data-close]')) b.innerHTML = ICON.x;
@@ -831,7 +831,7 @@
       if (!propsSchema || propsSchema.edition !== want.edition || propsSchema.version !== want.version) {
         list.innerHTML = '<p class="props-empty">설정 목록을 불러오는 중…</p>';
         const qs = want.edition === 'java' ? `?edition=java&version=${encodeURIComponent(want.version || '')}` : '';
-        const schema = await api('GET', `/api/server-properties${qs}`);
+        const schema = await api('GET', `api/server-properties${qs}`);
         if (req !== propsRequest) return;
         propsSchema = schema;
       }
@@ -967,8 +967,8 @@
     submit.disabled = true;
     try {
       if (java && !S.eulaAcceptedAt && !body.agreeEula) throw new Error('Java 서버를 실행하려면 Minecraft EULA에 동의해야 합니다.');
-      if (editingId) await api('PATCH', `/api/servers/${editingId}`, body);
-      else await api('POST', '/api/servers', body);
+      if (editingId) await api('PATCH', `api/servers/${editingId}`, body);
+      else await api('POST', 'api/servers', body);
       $('#dlg-server').close();
       toast(editingId ? '저장했습니다.' : '서버를 만들었습니다. 「실행」을 누르면 켜집니다.');
     } catch (ex) {
@@ -1117,13 +1117,13 @@
   $('#java-eula').addEventListener('input', renderJavaSettings);
   $('#java-pick').addEventListener('change', renderJavaSettings);
   $('#java-check').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-    const v = await api('GET', '/api/java/versions');
+    const v = await api('GET', 'api/java/versions');
     fillJavaVersions($('#java-pick'), $('#java-pick').value);
     toast(`Java Edition 최신 릴리스는 ${v.latest}입니다.`);
   }));
   $('#java-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
     const version = $('#java-pick').value;
-    await api('POST', '/api/java/install', { version, agreeEula: $('#java-eula').checked });
+    await api('POST', 'api/java/install', { version, agreeEula: $('#java-eula').checked });
     toast(`Java ${version} 내려받기를 시작했습니다.`);
   }));
 
@@ -1132,7 +1132,7 @@
     const err = $('#settings-error');
     err.hidden = true;
     try {
-      await api('PUT', '/api/settings', {
+      await api('PUT', 'api/settings', {
         estRamPerServerGB: Number($('#est-ram').value),
         maxConcurrent: $('#max-auto').checked ? null : Number($('#max-range').value),
         lanHost: $('#lan-host').value,
@@ -1151,22 +1151,22 @@
   });
 
   $('#bds-current').addEventListener('change', (e) => withBusy(null, async () => {
-    await api('PUT', '/api/bds/current', { version: e.target.value });
+    await api('PUT', 'api/bds/current', { version: e.target.value });
     toast(`이제 BDS ${e.target.value}를 사용합니다. 서버를 다시 실행하면 적용됩니다.`);
   }));
   $('#bds-check').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-    const v = await api('GET', '/api/bds/latest');
+    const v = await api('GET', 'api/bds/latest');
     toast(v.updateAvailable ? `새 버전 ${v.latest}이 있습니다.` : `최신 버전(${v.latest})을 사용 중입니다.`);
   }));
   $('#bds-install').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-    await api('POST', '/api/bds/install', { agreeEula: $('#bds-eula').checked });
+    await api('POST', 'api/bds/install', { agreeEula: $('#bds-eula').checked });
     toast('서버 프로그램 설치를 시작했습니다.');
   }));
 
   $('#pw-form').addEventListener('submit', (e) => {
     e.preventDefault();
     withBusy(null, async () => {
-      await api('POST', '/api/auth/password', { current: $('#pw-current').value, next: $('#pw-next').value });
+      await api('POST', 'api/auth/password', { current: $('#pw-current').value, next: $('#pw-next').value });
       $('#pw-current').value = '';
       $('#pw-next').value = '';
       toast('관리자 비밀번호를 바꿨습니다.');
@@ -1235,7 +1235,7 @@
     renderConsoleMeta();
     $('#dlg-console').showModal();
     try {
-      const { lines } = await api('GET', `/api/servers/${id}/logs`);
+      const { lines } = await api('GET', `api/servers/${id}/logs`);
       appendLogs(lines);
       appendLogs(consoleBuffer);
     } catch (ex) {
@@ -1259,7 +1259,7 @@
     const command = input.value.trim();
     if (!command || !consoleId) return;
     withBusy(null, async () => {
-      await api('POST', `/api/servers/${consoleId}/command`, { command });
+      await api('POST', `api/servers/${consoleId}/command`, { command });
       input.value = '';
     });
   });
@@ -1269,7 +1269,7 @@
 
   (async () => {
     try {
-      const st = await api('GET', '/api/auth/status');
+      const st = await api('GET', 'api/auth/status');
       if (st.setupRequired) showAuth('setup');
       else if (!st.authenticated) showAuth('login');
       else showApp();
