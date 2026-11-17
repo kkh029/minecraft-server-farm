@@ -7,6 +7,7 @@ const { EventEmitter } = require('events');
 const { RUNTIME_FILE, IS_WIN, MAX_SLOTS } = require('./paths');
 const { HttpError, readJson, writeJson, randomPin, isAlive, compareVersions } = require('./util');
 const instance = require('./instance');
+const signalproxy = require('./signalproxy');
 const system = require('./system');
 const javaauth = require('./javaauth');
 const { supportsProtect } = require('./java');
@@ -74,6 +75,7 @@ function newRuntime() {
     runId: null, // Java: id of this start, which the password data pack checks player tags against
     launch: null, // Java: { java, jar, repoDir, info } of the version being run
     auth: { run: null, alive: null },
+    proxy: null, // Bedrock NetherNet: { publicPort, internalPort, handle } of the portal's signaling proxy
   };
 }
 
@@ -84,6 +86,7 @@ class Manager extends EventEmitter {
     this.bds = bds;
     this.java = java;
     this.rt = new Map();
+    this.resolvePublicIp = signalproxy.createPublicIpResolver(() => this.store.config.publicHost);
     this.statsTimer = setInterval(() => this.refreshStats(), 5000);
     this.statsTimer.unref();
   }
@@ -202,7 +205,9 @@ class Manager extends EventEmitter {
         });
       } else {
         this.attachFreeSlot(id, rt, version);
-        instance.writeProperties(rt.slot, version, server);
+        const proxied = server.transport === 'nethernet';
+        if (proxied) await this.startProxy(id, rt, server.port, server.port + 1);
+        instance.writeProperties(rt.slot, version, server, { internalPort: proxied ? server.port + 1 : null });
         instance.writeAuthPack(id, {
           enabled: server.protect,
           pin,
@@ -220,6 +225,29 @@ class Manager extends EventEmitter {
       this.changed();
       throw err instanceof HttpError ? err : new HttpError(500, err.message);
     }
+  }
+
+  // NetherNet joins go through the portal (see signalproxy.js) so players outside the LAN get the internet address.
+  // BDS itself listens on internalPort.
+  async startProxy(id, rt, publicPort, internalPort) {
+    this.stopProxy(rt);
+    try {
+      const handle = await signalproxy.start({
+        publicPort,
+        internalPort,
+        resolvePublicIp: this.resolvePublicIp,
+        log: (text) => this.portalLog(id, rt, text),
+      });
+      rt.proxy = { publicPort, internalPort, handle };
+    } catch (err) {
+      throw new HttpError(409, `접속 포트 ${publicPort}를 열지 못했습니다: ${err.code || err.message}`);
+    }
+  }
+
+  stopProxy(rt) {
+    if (!rt.proxy) return;
+    rt.proxy.handle.close().catch(() => {});
+    rt.proxy = null;
   }
 
   // JVM options for a Java server. The heap limit is the server's memory setting; the encoding options keep
@@ -254,6 +282,7 @@ class Manager extends EventEmitter {
   }
 
   releaseSlot(id, rt) {
+    this.stopProxy(rt);
     if (!rt.slot) return;
     instance.detachSlot(rt.slot, id);
     rt.slot = null;
@@ -266,6 +295,7 @@ class Manager extends EventEmitter {
       if (!(await tcpFree(port))) busy.push(`TCP ${port}`);
     } else if (transport === 'nethernet') {
       if (!(await tcpFree(port))) busy.push(`TCP ${port}`);
+      if (!(await tcpFree(port + 1))) busy.push(`TCP ${port + 1}`);
       const used = [];
       for (let p = server.udpPortStart; p < server.udpPortStart + UDP_BLOCK; p++) if (!(await udpFree(p))) used.push(p);
       if (used.length) busy.push(`UDP ${used.join(', ')}`);
@@ -661,6 +691,7 @@ class Manager extends EventEmitter {
     for (const [id, rt] of this.rt) {
       if (rt.pid && ACTIVE.has(rt.status)) {
         data[id] = { pid: rt.pid, slot: rt.slot, edition: rt.edition, pin: rt.pin, protect: rt.protect, startedAt: rt.startedAt, version: rt.version };
+        if (rt.proxy) data[id].proxy = { publicPort: rt.proxy.publicPort, internalPort: rt.proxy.internalPort };
       }
     }
     try {
@@ -686,6 +717,14 @@ class Manager extends EventEmitter {
         version: info.version,
       });
       this.portalLog(id, rt, `포털이 재시작되기 전부터 실행 중인 서버입니다 (PID ${info.pid}). 콘솔에 다시 연결할 수 없으니, 정지 후 다시 실행하세요.`);
+      // Keep players able to join it: BDS listens on the internal port, so the portal must keep the public one.
+      if (info.proxy) {
+        try {
+          await this.startProxy(id, rt, info.proxy.publicPort, info.proxy.internalPort);
+        } catch (err) {
+          this.portalLog(id, rt, err.message);
+        }
+      }
     }
     this.saveRuntimeFile();
     this.changed();
