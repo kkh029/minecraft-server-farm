@@ -16,6 +16,7 @@ param(
   [string]$DataDir = $(if ($env:MCF_DATA_DIR) { $env:MCF_DATA_DIR } else { Join-Path $PSScriptRoot 'data' }),
   [int]$Slots = 32,
   [int]$PortalPort = 8080,
+  [string]$GamePorts = '19132-19259',
   [switch]$IncludePublic,
   [switch]$Remove,
   [switch]$PauseAtEnd
@@ -30,7 +31,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 if (-not $isAdmin) {
   Write-Host '방화벽 규칙을 만들려면 관리자 권한이 필요합니다. 권한 확인 창에서 [예]를 눌러 주세요.'
   $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
-    '-DataDir', "`"$DataDir`"", '-Slots', $Slots, '-PortalPort', $PortalPort, '-PauseAtEnd')
+    '-DataDir', "`"$DataDir`"", '-Slots', $Slots, '-PortalPort', $PortalPort, '-GamePorts', $GamePorts, '-PauseAtEnd')
   if ($IncludePublic) { $argList += '-IncludePublic' }
   if ($Remove) { $argList += '-Remove' }
   try {
@@ -94,13 +95,17 @@ try {
     New-NetFirewallRule -DisplayName 'Minecraft Server Farm - 웹 포털' -Group $Group -Direction Inbound `
       -Action Allow -Program $node -Protocol TCP -LocalPort $PortalPort -Profile $profiles `
       -Description '마인크래프트 서버 팜 웹 포털' | Out-Null
+    # Bedrock (NetherNet) players reach the portal first on each server's TCP port; it passes the join on to BDS.
+    New-NetFirewallRule -DisplayName 'Minecraft Server Farm - Bedrock 접속 중계' -Group $Group -Direction Inbound `
+      -Action Allow -Program $node -Protocol TCP -LocalPort $GamePorts -Profile $profiles `
+      -Description '마인크래프트 서버 팜 포털이 Bedrock 서버 접속(TCP)을 받아 서버로 넘김' | Out-Null
   }
 
   Write-Host ''
   Write-Host '완료했습니다.' -ForegroundColor Green
   Write-Host "  서버 슬롯 1~$Slots 허용 규칙: $DataDir\slots\<번호>\bedrock_server.exe"
   Write-Host "  Java 서버 허용 규칙 $($javaRuntimes.Count)개: $runtimeDir\<이름>\bin\java.exe"
-  if ($node) { Write-Host "  웹 포털 허용 규칙: $node (TCP $PortalPort)" }
+  if ($node) { Write-Host "  웹 포털 허용 규칙: $node (TCP $PortalPort, Bedrock 접속 TCP $GamePorts)" }
   else { Write-Host '  node.exe를 찾지 못해 웹 포털 규칙은 만들지 않았습니다.' -ForegroundColor Yellow }
   Write-Host "  지운 예전 규칙: $($old.Count + $prompted.Count)개"
   Write-Host "  적용 네트워크: $(if ($IncludePublic) { '모든 네트워크' } else { '개인, 도메인' })"

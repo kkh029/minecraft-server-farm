@@ -195,7 +195,9 @@ function setProp(text, key, value) {
   return re.test(text) ? text.replace(re, line) : `${text.replace(/\s*$/, '')}\n${line}\n`;
 }
 
-function writeProperties(n, version, server) {
+// internalPort: NetherNet servers sit behind the portal's signaling proxy (signalproxy.js), which takes the
+// server's own port; BDS then listens on this one.
+function writeProperties(n, version, server, { internalPort = null } = {}) {
   let text = fs.readFileSync(path.join(BDS_DIR, version, 'server.properties'), 'utf8');
   const props = {
     'server-name': server.name,
@@ -205,7 +207,7 @@ function writeProperties(n, version, server) {
     'max-players': server.maxPlayers,
     'online-mode': server.onlineMode,
     transport: server.transport,
-    'server-port': server.port,
+    'server-port': internalPort || server.port,
     'server-portv6': server.port + 1,
     'server-udp-ports': `${server.udpPortStart}-${server.udpPortStart + UDP_BLOCK - 1}`,
     'enable-lan-visibility': server.lanVisibility,
