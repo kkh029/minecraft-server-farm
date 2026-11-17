@@ -2,7 +2,7 @@
   "name": "minecraft-server-farm",
   "version": "1.0.0",
   "private": true,
-  "description": "Web portal for running several Minecraft Bedrock Dedicated Servers on one machine",
+  "description": "Web portal for running several Minecraft servers (Bedrock and Java Edition) on one machine",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js"

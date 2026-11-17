@@ -12,6 +12,7 @@ const DEFAULT_CONFIG = {
   lanHost: '',
   portBase: 19132,
   udpPortBase: 20000,
+  javaPortBase: 25565,
   authTimeoutSec: 120,
   authMaxFails: 5,
   bdsVersion: null, // null = newest installed version
@@ -24,9 +25,11 @@ const DEFAULT_CONFIG = {
 // port-forwarded. Verified working for LAN joins on BDS 1.26.63.1.
 const UDP_BLOCK = 16;
 
+const EDITIONS = ['bedrock', 'java'];
 const GAMEMODES = ['survival', 'creative', 'adventure'];
 const DIFFICULTIES = ['peaceful', 'easy', 'normal', 'hard'];
 const TRANSPORTS = ['nethernet', 'raknet'];
+const JAVA_MEMORY_MB = { min: 512, max: 32768, default: 2048 };
 
 const SERVER_DEFAULTS = {
   gamemode: 'survival',
@@ -34,12 +37,16 @@ const SERVER_DEFAULTS = {
   maxPlayers: 10,
   levelSeed: '',
   protect: true,
-  transport: 'nethernet',
   onlineMode: true,
-  allowCheats: false,
-  viewDistance: 32,
-  lanVisibility: false,
 };
+
+// Fields that only mean something for one edition.
+const EDITION_DEFAULTS = {
+  bedrock: { transport: 'nethernet', allowCheats: false, viewDistance: 32, lanVisibility: false },
+  java: { viewDistance: 10, memoryMB: JAVA_MEMORY_MB.default },
+};
+
+const VIEW_DISTANCE = { bedrock: [6, 96], java: [3, 32] };
 
 class Store {
   constructor() {
@@ -49,10 +56,15 @@ class Store {
       this.saveConfig();
     }
     this.servers = readJson(SERVERS_FILE, []);
-    // Servers created before UDP ranges existed get one now.
     let migrated = false;
     for (const s of this.servers) {
-      if (!Number.isInteger(s.udpPortStart)) {
+      // Every server made before Java Edition support is a Bedrock server.
+      if (!EDITIONS.includes(s.edition)) {
+        s.edition = 'bedrock';
+        migrated = true;
+      }
+      // Bedrock servers created before UDP ranges existed get one now.
+      if (s.edition === 'bedrock' && !Number.isInteger(s.udpPortStart)) {
         s.udpPortStart = this.nextFreeUdpStart(s.id, [s.port, s.port + 1]);
         migrated = true;
       }
@@ -78,8 +90,10 @@ class Store {
     return server;
   }
 
-  // Every port a server uses: `port` and `port + 1` (TCP handshake / RakNet IPv6) plus its UDP block.
+  // Every port a server uses. Bedrock: `port` and `port + 1` (TCP handshake / RakNet IPv6) plus its UDP block.
+  // Java: just its TCP port.
   static ranges(s) {
+    if (s.edition === 'java') return [[s.port, s.port]];
     const list = [[s.port, s.port + 1]];
     if (Number.isInteger(s.udpPortStart)) list.push([s.udpPortStart, s.udpPortStart + UDP_BLOCK - 1]);
     return list;
@@ -89,13 +103,14 @@ class Store {
     return this.servers.some((s) => s.id !== exceptId && Store.ranges(s).some(([a, b]) => from <= b && a <= to));
   }
 
-  portTaken(port, exceptId) {
-    return this.rangeTaken(port, port + 1, exceptId);
+  portTaken(port, exceptId, edition = 'bedrock') {
+    return this.rangeTaken(port, edition === 'java' ? port : port + 1, exceptId);
   }
 
-  nextFreePort() {
-    for (let port = this.config.portBase; port < 65534; port += 2) {
-      if (!this.portTaken(port)) return port;
+  nextFreePort(edition = 'bedrock') {
+    const java = edition === 'java';
+    for (let port = java ? this.config.javaPortBase : this.config.portBase; port < 65534; port += java ? 1 : 2) {
+      if (!this.portTaken(port, null, edition)) return port;
     }
     throw new HttpError(409, '사용 가능한 포트가 없습니다.');
   }
@@ -109,6 +124,10 @@ class Store {
   }
 
   checkPorts(server) {
+    if (server.edition === 'java') {
+      if (this.portTaken(server.port, server.id, 'java')) throw new HttpError(409, `포트 ${server.port}는 다른 서버가 사용 중입니다.`);
+      return;
+    }
     const [[p], [u0, u1]] = Store.ranges(server);
     if (this.portTaken(p, server.id)) throw new HttpError(409, `포트 ${p}(또는 ${p + 1})는 다른 서버가 사용 중입니다.`);
     if (this.rangeTaken(u0, u1, server.id)) throw new HttpError(409, `UDP 포트 ${u0}-${u1}은(는) 다른 서버가 사용 중입니다.`);
@@ -116,10 +135,21 @@ class Store {
   }
 
   createServer(input) {
-    const fields = normalizeServerInput(input, null);
-    const port = fields.port ?? this.nextFreePort();
-    const udpPortStart = fields.udpPortStart ?? this.nextFreeUdpStart(null, [port, port + 1]);
-    const server = { id: newId(), ...SERVER_DEFAULTS, ...fields, port, udpPortStart, createdAt: new Date().toISOString() };
+    const edition = input?.edition ?? 'bedrock';
+    if (!EDITIONS.includes(edition)) throw new HttpError(400, '에디션은 bedrock 또는 java여야 합니다.');
+    const fields = normalizeServerInput(input, null, edition);
+    const port = fields.port ?? this.nextFreePort(edition);
+    const ports = edition === 'java' ? {} : { udpPortStart: fields.udpPortStart ?? this.nextFreeUdpStart(null, [port, port + 1]) };
+    const server = {
+      id: newId(),
+      edition,
+      ...SERVER_DEFAULTS,
+      ...EDITION_DEFAULTS[edition],
+      ...fields,
+      port,
+      ...ports,
+      createdAt: new Date().toISOString(),
+    };
     this.checkPorts(server);
     this.servers.push(server);
     this.saveServers();
@@ -128,7 +158,10 @@ class Store {
 
   updateServer(id, input) {
     const server = this.requireServer(id);
-    const fields = normalizeServerInput(input, server);
+    if (input?.edition !== undefined && input.edition !== server.edition) {
+      throw new HttpError(400, '만든 뒤에는 에디션을 바꿀 수 없습니다 (Java와 Bedrock은 월드 형식이 다릅니다).');
+    }
+    const fields = normalizeServerInput(input, server, server.edition);
     this.checkPorts({ ...server, ...fields });
     Object.assign(server, fields);
     this.saveServers();
@@ -142,9 +175,10 @@ class Store {
   }
 }
 
-function normalizeServerInput(input, existing) {
+function normalizeServerInput(input, existing, edition) {
   if (!input || typeof input !== 'object') throw new HttpError(400, '잘못된 요청입니다.');
   const out = {};
+  const java = edition === 'java';
   const has = (k) => input[k] !== undefined && input[k] !== null;
 
   if (has('name') || !existing) {
@@ -162,18 +196,27 @@ function normalizeServerInput(input, existing) {
     if (!DIFFICULTIES.includes(input.difficulty)) throw new HttpError(400, '난이도가 올바르지 않습니다.');
     out.difficulty = input.difficulty;
   }
-  if (has('transport')) {
+  if (has('transport') && !java) {
     if (!TRANSPORTS.includes(input.transport)) throw new HttpError(400, '네트워크 방식이 올바르지 않습니다.');
     out.transport = input.transport;
   }
   if (has('maxPlayers')) out.maxPlayers = intInRange(input.maxPlayers, 1, 100, '최대 인원');
-  if (has('viewDistance')) out.viewDistance = intInRange(input.viewDistance, 6, 96, '시야 거리');
+  if (has('viewDistance')) out.viewDistance = intInRange(input.viewDistance, ...VIEW_DISTANCE[edition], '시야 거리');
   if (has('port') && input.port !== '') out.port = intInRange(input.port, 1024, 65534, '포트');
-  if (has('udpPortStart') && input.udpPortStart !== '') {
+  if (has('udpPortStart') && input.udpPortStart !== '' && !java) {
     out.udpPortStart = intInRange(input.udpPortStart, 1024, 65535 - UDP_BLOCK, 'UDP 시작 포트');
   }
-  for (const key of ['protect', 'onlineMode', 'allowCheats', 'lanVisibility']) {
+  for (const key of java ? ['protect', 'onlineMode'] : ['protect', 'onlineMode', 'allowCheats', 'lanVisibility']) {
     if (has(key)) out[key] = Boolean(input[key]);
+  }
+  if (java) {
+    // Which versions exist is checked by the API layer against Mojang's list (JavaManager.isValidVersion).
+    if (has('javaVersion') || !existing) {
+      const v = String(input.javaVersion ?? '').trim();
+      if (!/^\d+(\.\d+)+$/.test(v)) throw new HttpError(400, 'Java 버전을 고르세요.');
+      out.javaVersion = v;
+    }
+    if (has('memoryMB')) out.memoryMB = intInRange(input.memoryMB, JAVA_MEMORY_MB.min, JAVA_MEMORY_MB.max, '메모리(MB)');
   }
   // Already checked against the BDS option list by the API layer (properties.validate).
   if (has('extraProperties')) {
@@ -198,4 +241,4 @@ function intInRange(value, min, max, label) {
   return n;
 }
 
-module.exports = { Store, GAMEMODES, DIFFICULTIES, TRANSPORTS, SERVER_DEFAULTS, UDP_BLOCK };
+module.exports = { Store, EDITIONS, GAMEMODES, DIFFICULTIES, TRANSPORTS, SERVER_DEFAULTS, EDITION_DEFAULTS, UDP_BLOCK, JAVA_MEMORY_MB };

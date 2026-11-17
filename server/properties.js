@@ -1,12 +1,12 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { BDS_DIR } = require('./paths');
+const { BDS_DIR, JAVA_VERSIONS_DIR } = require('./paths');
 const { HttpError } = require('./util');
 
 // Every server.properties option, built from the server.properties that ships with the installed BDS version
 // (so options added in future versions show up automatically, with Mojang's English description), plus Korean
-// names/help and value rules for the options known today.
+// names/help and value rules for the options known today. Java Edition: see the second half of this file.
 
 const GROUPS = [
   ['gameplay', '게임플레이'],
@@ -164,7 +164,8 @@ function inferType(p) {
 
 const cache = new Map();
 
-function schema(version) {
+function schema(edition, version) {
+  if (edition === 'java') return javaSchema(version);
   if (!version) return null;
   if (cache.has(version)) return cache.get(version);
   const file = path.join(BDS_DIR, version, 'server.properties');
@@ -193,7 +194,7 @@ function schema(version) {
       warn: meta.warn,
     });
   }
-  const result = { version, groups: GROUPS.map(([id, label]) => ({ id, label })), properties, fixed };
+  const result = { edition: 'bedrock', version, groups: GROUPS.map(([id, label]) => ({ id, label })), properties, fixed };
   cache.set(version, result);
   return result;
 }
@@ -234,19 +235,27 @@ function checkValue(p, value) {
   }
 }
 
-// Checks user-supplied overrides against the schema of the given BDS version. Empty values mean "use the default"
-// and are dropped, so only real changes are stored.
-function validate(version, input) {
+// Checks user-supplied overrides against the schema of the given server version. Empty values mean "use the
+// default" and are dropped, so only real changes are stored.
+function validate(edition, version, input) {
   if (input === undefined || input === null) return {};
   if (typeof input !== 'object' || Array.isArray(input)) throw new HttpError(400, '서버 설정 형식이 올바르지 않습니다.');
-  const s = schema(version);
-  if (!s) throw new HttpError(409, '서버 프로그램(BDS)이 설치되어 있어야 상세 설정을 저장할 수 있습니다.');
+  const java = edition === 'java';
+  const s = schema(edition, version);
+  if (!s) {
+    // Nothing to check against yet (Java version not downloaded): only "no changes" can be saved.
+    if (Object.values(input).every((v) => String(v ?? '').trim() === '')) return {};
+    throw new HttpError(409, java
+      ? `Java ${version} 서버 프로그램을 내려받은 뒤에 상세 설정을 바꿀 수 있습니다 (처음 실행할 때 자동으로 받습니다).`
+      : '서버 프로그램(BDS)이 설치되어 있어야 상세 설정을 저장할 수 있습니다.');
+  }
+  const fixed = new Set(s.fixed.map((f) => f.key));
   const byKey = new Map(s.properties.map((p) => [p.key, p]));
   const out = {};
   for (const [key, raw] of Object.entries(input)) {
-    if (MANAGED[key] || BASIC[key]) throw new HttpError(400, `${key}는 여기서 바꿀 수 없습니다.`);
+    if (fixed.has(key) || (!java && (MANAGED[key] || BASIC[key]))) throw new HttpError(400, `${key}는 여기서 바꿀 수 없습니다.`);
     const p = byKey.get(key);
-    if (!p) throw new HttpError(400, `이 BDS 버전에 없는 설정입니다: ${key}`);
+    if (!p) throw new HttpError(400, `이 ${java ? 'Java' : 'BDS'} 버전에 없는 설정입니다: ${key}`);
     const value = String(raw ?? '').trim();
     if (/[\r\n]/.test(value)) throw new HttpError(400, `${key}: 줄바꿈은 쓸 수 없습니다.`);
     if (value === '') continue;
@@ -255,4 +264,186 @@ function validate(version, input) {
   return out;
 }
 
-module.exports = { schema, validate, parseTemplate, MANAGED, BASIC, PORTAL_DEFAULTS };
+// ---------- Java Edition ----------
+//
+// Java servers don't ship a commented server.properties. The installer asks each version's server jar for its
+// defaults (--initSettings), so the list matches that version exactly; known options get Korean names here, and
+// new ones show up with their key and a type guessed from the default.
+
+const JAVA_GROUPS = [
+  ['gameplay', '게임플레이'],
+  ['world', '월드 생성'],
+  ['players', '플레이어·권한'],
+  ['performance', '성능'],
+  ['network', '네트워크·채팅'],
+  ['resourcepack', '리소스 팩'],
+  ['remote', '원격 관리 (RCON·쿼리·관리 서버)'],
+  ['misc', '기타'],
+];
+
+const JAVA_MANAGED = {
+  'server-port': '서버 편집의 「포트」에서 정합니다.',
+  'query.port': '포털이 접속 포트와 같은 번호로 정합니다.',
+  'level-name': '포털이 월드 폴더 이름을 world로 고정합니다.',
+};
+
+const JAVA_BASIC = {
+  motd: '서버 이름',
+  gamemode: '게임 모드',
+  difficulty: '난이도',
+  'max-players': '최대 인원',
+  'online-mode': '정품 계정 인증',
+  'view-distance': '시야 거리',
+  'level-seed': '월드 시드',
+};
+
+const JAVA_PORTAL_DEFAULTS = {
+  // 26.x creates servers with the whitelist on; the password check protects the server instead, and an empty
+  // whitelist would keep everyone out.
+  'white-list': 'false',
+  // The portal sends console commands for the password check; without this every op would see them in chat.
+  'broadcast-console-to-ops': 'false',
+};
+
+// Never copied from a version's defaults: each server must make its own.
+const JAVA_PER_SERVER = new Set(['management-server-secret']);
+
+const PERMISSION_LEVELS = { 1: '1 (스폰 보호 무시)', 2: '2 (명령 블록·대부분 명령)', 3: '3 (강퇴·밴)', 4: '4 (모든 명령)' };
+
+const JAVA_META = {
+  pvp: { group: 'gameplay', type: 'bool', label: 'PvP (플레이어끼리 공격)' },
+  hardcore: { group: 'gameplay', type: 'bool', label: '하드코어', help: '켜면 난이도가 어려움으로 고정되고, 죽으면 관전 모드가 됩니다.' },
+  'force-gamemode': { group: 'gameplay', type: 'bool', label: '게임 모드 강제', help: '켜면 접속할 때마다 기본 게임 모드로 바꿉니다.' },
+  'allow-flight': { group: 'gameplay', type: 'bool', label: '비행 허용', help: '끄면 서바이벌에서 공중에 떠 있는 플레이어(비행 핵·모드)를 강퇴합니다. 렉이 심하면 정상 플레이어도 강퇴될 수 있습니다.' },
+  'allow-nether': { group: 'gameplay', type: 'bool', label: '네더 허용' },
+  'enable-command-block': { group: 'gameplay', type: 'bool', label: '명령 블록 사용' },
+  'spawn-animals': { group: 'gameplay', type: 'bool', label: '동물 스폰' },
+  'spawn-monsters': { group: 'gameplay', type: 'bool', label: '몬스터 스폰' },
+  'spawn-npcs': { group: 'gameplay', type: 'bool', label: '주민 스폰' },
+  'spawn-protection': { group: 'gameplay', type: 'int', min: 0, label: '스폰 보호 반경 (블록)', help: '스폰 주변 이 반경 안에서는 OP가 아닌 플레이어가 블록을 부수거나 놓을 수 없습니다. 0이면 끕니다.' },
+  'level-type': { group: 'world', type: 'enum', options: ['minecraft:normal', 'minecraft:flat', 'minecraft:large_biomes', 'minecraft:amplified', 'minecraft:single_biome_surface'], optionLabels: { 'minecraft:normal': '기본', 'minecraft:flat': '평지', 'minecraft:large_biomes': '큰 생물 군계', 'minecraft:amplified': '증폭', 'minecraft:single_biome_surface': '단일 생물 군계' }, label: '월드 유형', help: '월드를 처음 만들 때만 쓰입니다.' },
+  'generate-structures': { group: 'world', type: 'bool', label: '구조물 생성', help: '마을, 던전 같은 구조물을 만들지 정합니다. 새로 생성되는 지역에만 적용됩니다.' },
+  'generator-settings': { group: 'world', type: 'string', label: '월드 생성 설정 (JSON)', help: '평지·단일 생물 군계 월드의 세부 설정입니다.' },
+  'max-world-size': { group: 'world', type: 'int', min: 1, max: 29999984, label: '월드 경계 최대 반경 (블록)' },
+  'initial-enabled-packs': { group: 'world', type: 'string', label: '처음 켤 데이터 팩', help: '월드를 처음 만들 때만 쓰입니다. 쉼표로 구분합니다.' },
+  'initial-disabled-packs': { group: 'world', type: 'string', label: '처음 끌 데이터 팩', help: '월드를 처음 만들 때만 쓰입니다. 쉼표로 구분합니다.' },
+  'white-list': { group: 'players', type: 'bool', label: '화이트리스트만 접속', help: '켜면 whitelist.json에 등록된 계정만 들어올 수 있습니다. 콘솔에서 whitelist add <이름>으로 추가하세요. 포털은 비밀번호로 보호하므로 기본은 꺼짐입니다.', warnWhen: 'true', warn: '화이트리스트에 아무도 없으면 아무도 접속할 수 없습니다.' },
+  'enforce-whitelist': { group: 'players', type: 'bool', label: '화이트리스트 즉시 적용', help: '켜면 화이트리스트를 다시 불러올 때 목록에 없는 접속자를 바로 내보냅니다.' },
+  'op-permission-level': { group: 'players', type: 'enum', options: ['1', '2', '3', '4'], optionLabels: PERMISSION_LEVELS, label: 'OP 권한 단계', help: '/op로 관리자를 지정했을 때 받는 권한 단계입니다.' },
+  'function-permission-level': { group: 'players', type: 'enum', options: ['1', '2', '3', '4'], optionLabels: PERMISSION_LEVELS, label: '데이터 팩 함수 권한 단계' },
+  'player-idle-timeout': { group: 'players', type: 'int', min: 0, label: '잠수 강퇴 시간 (분)', help: '0이면 강퇴하지 않습니다.' },
+  'hide-online-players': { group: 'players', type: 'bool', label: '서버 목록에서 접속자 숨기기' },
+  'enforce-secure-profile': { group: 'network', type: 'bool', label: '채팅 서명 필수', help: 'Mojang이 서명한 채팅 키가 있는 계정만 접속하게 합니다. 정품 인증을 껐다면 이것도 끄세요.' },
+  'log-ips': { group: 'network', type: 'bool', label: '접속 IP 기록' },
+  'prevent-proxy-connections': { group: 'network', type: 'bool', label: '프록시·VPN 접속 막기', help: '정품 인증 서버와 이 서버가 본 접속 주소가 다르면 막습니다.' },
+  'rate-limit': { group: 'network', type: 'int', min: 0, label: '초당 패킷 제한', help: '넘으면 강퇴합니다. 0이면 제한 없음.' },
+  'network-compression-threshold': { group: 'network', type: 'int', min: -1, label: '압축 최소 크기 (바이트)', help: '-1이면 압축하지 않습니다.' },
+  'server-ip': { group: 'network', type: 'ip', label: '서버가 열릴 주소', help: '비우면 모든 네트워크에서 접속을 받습니다 (권장).' },
+  'enable-status': { group: 'network', type: 'bool', label: '서버 목록에 상태 표시', help: '끄면 서버 목록에서 오프라인처럼 보입니다 (접속은 가능).' },
+  'accepts-transfers': { group: 'network', type: 'bool', label: '다른 서버에서 넘어오는 접속 허용 (/transfer)' },
+  'chat-spam-threshold-seconds': { group: 'network', type: 'int', min: 0, label: '채팅 도배 판정 시간 (초)' },
+  'command-spam-threshold-seconds': { group: 'network', type: 'int', min: 0, label: '명령어 도배 판정 시간 (초)' },
+  'enable-code-of-conduct': { group: 'network', type: 'bool', label: '행동 강령 표시' },
+  'text-filtering-config': { group: 'network', type: 'string', label: '채팅 필터 설정' },
+  'bug-report-link': { group: 'misc', type: 'string', label: '버그 신고 링크' },
+  'simulation-distance': { group: 'performance', type: 'int', min: 3, max: 32, label: '시뮬레이션 거리 (청크)', help: '플레이어 주변 몇 청크까지 몹, 작물, 레드스톤이 움직일지. 높을수록 서버 부담이 커집니다.' },
+  'entity-broadcast-range-percentage': { group: 'performance', type: 'int', min: 10, max: 1000, label: '엔티티 표시 거리 (%)' },
+  'max-tick-time': { group: 'performance', type: 'int', min: -1, label: '멈춤 판정 시간 (ms)', help: '한 틱이 이보다 오래 걸리면 서버가 멈춘 것으로 보고 종료합니다. -1이면 끕니다.' },
+  'max-chained-neighbor-updates': { group: 'performance', type: 'int', label: '연쇄 블록 업데이트 한도' },
+  'pause-when-empty-seconds': { group: 'performance', type: 'int', min: 0, label: '빈 서버 일시정지 (초)', help: '아무도 없는 상태가 이만큼 이어지면 월드 시간을 멈춰 CPU를 아낍니다. 0이면 끕니다.' },
+  'sync-chunk-writes': { group: 'performance', type: 'bool', label: '청크 저장을 즉시 디스크에 쓰기', help: '끄면 빨라지지만 갑자기 꺼질 때 월드가 손상될 위험이 커집니다.' },
+  'region-file-compression': { group: 'performance', type: 'enum', options: ['deflate', 'lz4', 'none'], optionLabels: { deflate: 'deflate (기본, 작은 용량)', lz4: 'lz4 (빠름, 큰 용량)', none: '압축 안 함' }, label: '월드 파일 압축 방식' },
+  'use-native-transport': { group: 'performance', type: 'bool', label: 'Linux 네이티브 네트워크 사용' },
+  'require-resource-pack': { group: 'resourcepack', type: 'bool', label: '리소스 팩 필수', help: '거절하면 접속할 수 없게 합니다.' },
+  'resource-pack': { group: 'resourcepack', type: 'string', label: '리소스 팩 주소 (URL)' },
+  'resource-pack-id': { group: 'resourcepack', type: 'string', label: '리소스 팩 UUID' },
+  'resource-pack-prompt': { group: 'resourcepack', type: 'string', label: '리소스 팩 안내 문구' },
+  'resource-pack-sha1': { group: 'resourcepack', type: 'string', label: '리소스 팩 SHA-1' },
+  'enable-rcon': { group: 'remote', type: 'bool', label: 'RCON 켜기', help: '원격으로 콘솔 명령을 보낼 수 있게 합니다. 강한 비밀번호를 정하고, 포트를 인터넷에 열지 마세요.', warnWhen: 'true', warn: 'rcon.password가 약하면 누구나 서버를 조종할 수 있습니다.' },
+  'rcon.port': { group: 'remote', type: 'int', min: 1, max: 65535, label: 'RCON 포트', help: '서버마다 다른 번호를 쓰세요.' },
+  'rcon.password': { group: 'remote', type: 'string', label: 'RCON 비밀번호' },
+  'broadcast-rcon-to-ops': { group: 'remote', type: 'bool', label: 'RCON 명령 결과를 OP에게 보여 주기' },
+  'broadcast-console-to-ops': { group: 'remote', type: 'bool', label: '콘솔 명령 결과를 OP에게 보여 주기', help: '포털이 비밀번호 확인을 위해 콘솔 명령을 자주 보내므로 기본은 꺼짐입니다.' },
+  'enable-query': { group: 'remote', type: 'bool', label: '쿼리(GameSpy4) 켜기', help: '서버 정보 조회 도구용입니다. 접속 포트와 같은 번호의 UDP를 씁니다.' },
+  'enable-jmx-monitoring': { group: 'remote', type: 'bool', label: 'JMX 모니터링' },
+  'management-server-enabled': { group: 'remote', type: 'bool', label: '관리 서버(API) 켜기' },
+  'management-server-host': { group: 'remote', type: 'string', label: '관리 서버 주소' },
+  'management-server-port': { group: 'remote', type: 'int', min: 0, max: 65535, label: '관리 서버 포트', help: '0이면 자동입니다.' },
+  'management-server-secret': { group: 'remote', type: 'string', label: '관리 서버 비밀 키', help: '비워 두면 서버가 실행할 때마다 새로 만듭니다.' },
+};
+
+function unescapeJava(v) {
+  return v.replace(/\\u([0-9a-fA-F]{4})|\\(.)/g, (m, hex, ch) => (hex ? String.fromCharCode(parseInt(hex, 16)) : ({ t: '\t', n: '\n', r: '\r', f: '\f' }[ch] ?? ch)));
+}
+
+// Escapes a value for a .properties file. Non-ASCII goes in \u form, which every Java version reads.
+function escapeJava(v) {
+  return String(v)
+    .replace(/\\/g, '\\\\')
+    .replace(/^ /, '\\ ')
+    .replace(/[^\x20-\x7e]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+// key → default value, in file order.
+function parseJavaProperties(text) {
+  const out = new Map();
+  for (const raw of text.split(/\r?\n/)) {
+    if (/^\s*[#!]/.test(raw) || !raw.trim()) continue;
+    const m = raw.match(/^([A-Za-z0-9_.-]+)\s*[=:]\s?(.*)$/);
+    if (m) out.set(m[1], unescapeJava(m[2]));
+  }
+  return out;
+}
+
+function javaTemplatePath(version) {
+  return version && /^\d+(\.\d+)+$/.test(version) ? path.join(JAVA_VERSIONS_DIR, version, 'server.properties') : null;
+}
+
+function javaSchema(version) {
+  const file = javaTemplatePath(version);
+  if (!file || !fs.existsSync(file)) return null;
+  const key = `java:${version}`;
+  if (cache.has(key)) return cache.get(key);
+  const defaults = parseJavaProperties(fs.readFileSync(file, 'utf8'));
+  const properties = [];
+  const fixed = [];
+  for (const [k, def] of defaults) {
+    if (JAVA_MANAGED[k]) { fixed.push({ key: k, kind: 'managed', reason: JAVA_MANAGED[k] }); continue; }
+    if (JAVA_BASIC[k]) { fixed.push({ key: k, kind: 'basic', reason: `기본 설정의 「${JAVA_BASIC[k]}」에서 바꿉니다.` }); continue; }
+    const shown = JAVA_PER_SERVER.has(k) ? '' : def;
+    const meta = JAVA_META[k] || { group: 'misc', ...inferType({ default: shown, desc: [] }) };
+    properties.push({
+      key: k,
+      default: JAVA_PORTAL_DEFAULTS[k] ?? shown,
+      optional: false,
+      type: meta.type,
+      options: meta.options,
+      optionLabels: meta.optionLabels || (meta.type === 'bool' ? ON_OFF : undefined),
+      min: meta.min,
+      max: meta.max,
+      label: meta.label || k,
+      help: meta.help || '',
+      english: '',
+      group: meta.group || 'misc',
+      warnWhen: meta.warnWhen,
+      warn: meta.warn,
+    });
+  }
+  const result = { edition: 'java', version, groups: JAVA_GROUPS.map(([id, label]) => ({ id, label })), properties, fixed };
+  cache.set(key, result);
+  return result;
+}
+
+module.exports = {
+  schema,
+  validate,
+  parseTemplate,
+  parseJavaProperties,
+  escapeJava,
+  javaTemplatePath,
+  MANAGED,
+  BASIC,
+  PORTAL_DEFAULTS,
+  JAVA_PORTAL_DEFAULTS,
+  JAVA_PER_SERVER,
+};

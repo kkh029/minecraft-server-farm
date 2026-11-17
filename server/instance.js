@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { INSTANCES_DIR, SLOTS_DIR, TRASH_DIR, BDS_DIR, BDS_EXE, AUTHPACK_SRC, IS_WIN } = require('./paths');
 const { UDP_BLOCK } = require('./store');
-const { PORTAL_DEFAULTS } = require('./properties');
+const { PORTAL_DEFAULTS, JAVA_PORTAL_DEFAULTS, JAVA_PER_SERVER, parseJavaProperties, escapeJava } = require('./properties');
+const javaauth = require('./javaauth');
+const { supportsProtect } = require('./java');
 
 // Two kinds of folders:
 //
@@ -107,8 +109,8 @@ function hasIdentityKey(id) {
   return fs.existsSync(path.join(dir(id), 'keys', 'server_identity_key.pem'));
 }
 
-function worldExists(id) {
-  return fs.existsSync(path.join(worldDir(id), 'level.dat'));
+function worldExists(id, edition = 'bedrock') {
+  return fs.existsSync(path.join(edition === 'java' ? javaWorldDir(id) : worldDir(id), 'level.dat'));
 }
 
 // ---------- slots ----------
@@ -276,6 +278,63 @@ function updateAuthPin(id, opts) {
   if (fs.existsSync(file)) fs.writeFileSync(file, authConfigSource(opts));
 }
 
+// ---------- Java Edition ----------
+//
+// A Java server runs straight from its instance folder (world/, server.properties, ops.json, whitelist.json, …).
+// It needs no slot: the program Windows Firewall sees is the shared java.exe of its Java runtime, whose path
+// never changes, and the server jar and its libraries are read from data/java/versions/<version>.
+
+function javaWorldDir(id) {
+  return path.join(dir(id), LEVEL_NAME);
+}
+
+function writeJavaProperties(id, server, templateFile) {
+  const props = parseJavaProperties(fs.readFileSync(templateFile, 'utf8'));
+  for (const k of JAVA_PER_SERVER) props.delete(k);
+  const managed = {
+    motd: server.name,
+    gamemode: server.gamemode,
+    difficulty: server.difficulty,
+    'max-players': server.maxPlayers,
+    'online-mode': server.onlineMode,
+    'view-distance': server.viewDistance,
+    'level-seed': server.levelSeed || '',
+    'level-name': LEVEL_NAME,
+    'server-port': server.port,
+    'query.port': server.port,
+  };
+  // Order: the version's defaults → portal defaults → the owner's own settings → the fields the portal manages.
+  for (const [k, v] of Object.entries(JAVA_PORTAL_DEFAULTS)) if (props.has(k)) props.set(k, v);
+  for (const [k, v] of Object.entries(server.extraProperties || {})) {
+    if (!(k in managed) && props.has(k) && !/[\r\n]/.test(String(v))) props.set(k, v);
+  }
+  for (const [k, v] of Object.entries(managed)) props.set(k, String(v));
+  const lines = ['#Minecraft server properties', '#Written by minecraft-server-farm on every start. Change settings in the portal.'];
+  for (const [k, v] of props) lines.push(`${k}=${escapeJava(v)}`);
+  fs.writeFileSync(path.join(dir(id), 'server.properties'), `${lines.join('\n')}\n`);
+}
+
+// Everything a Java server needs in its folder before it starts. `eulaAcceptedAt` is when the owner agreed to
+// the Minecraft EULA in the portal; the server refuses to run without eula=true.
+function prepareJava(id, server, { version, template, dataPack, protect, runId, eulaAcceptedAt }) {
+  fs.mkdirSync(dir(id), { recursive: true });
+  fs.writeFileSync(path.join(dir(id), 'eula.txt'),
+    `#Agreed to the Minecraft EULA (https://aka.ms/MinecraftEULA) in the server farm portal at ${eulaAcceptedAt}\neula=true\n`);
+  writeJavaProperties(id, server, template);
+  // Always installed: with protection off it unlocks anyone still locked from an earlier protected session.
+  // Versions before 1.21 can't run it (and can't have been protected), so they get none.
+  const packDir = path.join(javaWorldDir(id), 'datapacks', javaauth.PACK);
+  if (dataPack && supportsProtect(version)) javaauth.writePack(javaWorldDir(id), { version, dataPack, protect, runId });
+  else fs.rmSync(packDir, { recursive: true, force: true });
+}
+
+// Called once a Java server has opened its world: from now on the world needs this version or newer.
+function markVersion(id, version) {
+  try {
+    fs.writeFileSync(path.join(dir(id), VERSION_MARKER), version);
+  } catch { /* not fatal */ }
+}
+
 // Moves an instance to data/trash. Any links are removed first so nothing that cleans up the trash later
 // can reach into shared files.
 function moveToTrash(id) {
@@ -306,5 +365,8 @@ module.exports = {
   hasIdentityKey,
   worldExists,
   moveToTrash,
+  javaWorldDir,
+  prepareJava,
+  markVersion,
   LEVEL_NAME,
 };
